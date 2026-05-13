@@ -6,6 +6,8 @@
       chrome,
       DEFAULT_STATE,
       getState,
+      getStepDefinitionForState = null,
+      getStepIdsForState = null,
       isRecoverableStep9AuthFailure,
       LOG_PREFIX,
       setState,
@@ -47,6 +49,53 @@
       return step > 0 ? step : null;
     }
 
+    function isPlainObject(value) {
+      return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    function normalizeStepStatus(value = '') {
+      const normalized = String(value || '').trim().toLowerCase();
+      return normalized || 'pending';
+    }
+
+    function getActiveStepIds(state = {}, statuses = {}) {
+      if (typeof getStepIdsForState === 'function') {
+        const ids = getStepIdsForState(state);
+        if (Array.isArray(ids) && ids.length) {
+          return ids
+            .map((step) => Number(step))
+            .filter(Number.isFinite)
+            .sort((left, right) => left - right);
+        }
+      }
+
+      return Object.keys({ ...DEFAULT_STATE.stepStatuses, ...(isPlainObject(statuses) ? statuses : {}) })
+        .map((step) => Number(step))
+        .filter(Number.isFinite)
+        .sort((left, right) => left - right);
+    }
+
+    function resolveStateStepKey(step, state = {}) {
+      const numericStep = normalizeLogStep(step);
+      if (!numericStep || typeof getStepDefinitionForState !== 'function') {
+        return '';
+      }
+      return String(getStepDefinitionForState(numericStep, state)?.key || '').trim();
+    }
+
+    function getStateStepStatus(step, statuses = {}, state = {}) {
+      const stepKey = resolveStateStepKey(step, state);
+      if (stepKey && isPlainObject(state?.nodeStatuses) && Object.prototype.hasOwnProperty.call(state.nodeStatuses, stepKey)) {
+        return normalizeStepStatus(state.nodeStatuses[stepKey]);
+      }
+
+      const merged = {
+        ...DEFAULT_STATE.stepStatuses,
+        ...(isPlainObject(statuses) ? statuses : {}),
+      };
+      return normalizeStepStatus(merged[step]);
+    }
+
     function buildLogEntry(message, level = 'info', options = {}) {
       const normalizedOptions = options && typeof options === 'object' ? options : {};
       const step = normalizeLogStep(normalizedOptions.step);
@@ -74,7 +123,18 @@
       const state = await getState();
       const statuses = { ...state.stepStatuses };
       statuses[step] = status;
-      await setState({ stepStatuses: statuses, currentStep: step });
+      const updates = { stepStatuses: statuses, currentStep: step };
+      const stepKey = resolveStateStepKey(step, state);
+      if (stepKey) {
+        updates.nodeStatuses = {
+          ...(isPlainObject(state?.nodeStatuses) ? state.nodeStatuses : {}),
+          [stepKey]: normalizeStepStatus(status),
+        };
+        if (normalizeStepStatus(status) === 'running') {
+          updates.currentNodeId = stepKey;
+        }
+      }
+      await setState(updates);
       chrome.runtime.sendMessage({
         type: 'STEP_STATUS_CHANGED',
         payload: { step, status },
@@ -148,27 +208,24 @@
       return status === 'completed' || status === 'manual_completed' || status === 'skipped';
     }
 
-    function getFirstUnfinishedStep(statuses = {}) {
-      const stepIds = Object.keys(DEFAULT_STATE.stepStatuses || {})
-        .map((step) => Number(step))
-        .filter(Number.isFinite)
-        .sort((left, right) => left - right);
+    function getFirstUnfinishedStep(statuses = {}, state = {}) {
+      const stepIds = getActiveStepIds(state, statuses);
       for (const step of stepIds) {
-        if (!isStepDoneStatus(statuses[step] || 'pending')) {
+        if (!isStepDoneStatus(getStateStepStatus(step, statuses, state))) {
           return step;
         }
       }
       return null;
     }
 
-    function hasSavedProgress(statuses = {}) {
-      return Object.values({ ...DEFAULT_STATE.stepStatuses, ...statuses }).some((status) => status !== 'pending');
+    function hasSavedProgress(statuses = {}, state = {}) {
+      return getActiveStepIds(state, statuses)
+        .some((step) => getStateStepStatus(step, statuses, state) !== 'pending');
     }
 
-    function getRunningSteps(statuses = {}) {
-      return Object.entries({ ...DEFAULT_STATE.stepStatuses, ...statuses })
-        .filter(([, status]) => status === 'running')
-        .map(([step]) => Number(step))
+    function getRunningSteps(statuses = {}, state = {}) {
+      return getActiveStepIds(state, statuses)
+        .filter((step) => getStateStepStatus(step, statuses, state) === 'running')
         .sort((a, b) => a - b);
     }
 

@@ -21,6 +21,8 @@
       getPendingAutoRunTimerPlan,
       getRunningSteps,
       getState,
+      getStepDefinitionForState = null,
+      getStepIdsForState = null,
       hasSavedProgress,
       isAddPhoneAuthFailure,
       isGpcTaskEndedFailure,
@@ -99,6 +101,16 @@
     }
 
     function getKnownStepIdsFromState(state = {}) {
+      if (typeof getStepIdsForState === 'function') {
+        const ids = getStepIdsForState(state);
+        if (Array.isArray(ids) && ids.length) {
+          return ids
+            .map((step) => normalizeRecordStep(step))
+            .filter(Boolean)
+            .sort((left, right) => left - right);
+        }
+      }
+
       const ids = new Set();
       for (const key of Object.keys(state?.stepStatuses || {})) {
         const step = normalizeRecordStep(key);
@@ -115,25 +127,61 @@
       return Array.from(ids).sort((left, right) => left - right);
     }
 
+    function resolveStateStepKey(step, state = {}) {
+      const numericStep = normalizeRecordStep(step);
+      if (!numericStep || typeof getStepDefinitionForState !== 'function') {
+        return '';
+      }
+      return String(getStepDefinitionForState(numericStep, state)?.key || '').trim();
+    }
+
+    function getStateStepStatus(step, state = {}) {
+      const stepKey = resolveStateStepKey(step, state);
+      if (stepKey && state?.nodeStatuses && typeof state.nodeStatuses === 'object'
+        && Object.prototype.hasOwnProperty.call(state.nodeStatuses, stepKey)) {
+        return String(state.nodeStatuses[stepKey] || '').trim();
+      }
+      return String(state?.stepStatuses?.[step] || '').trim();
+    }
+
+    function resolveNodeStepIdFromState(nodeKey = '', state = {}) {
+      const normalizedNodeKey = String(nodeKey || '').trim();
+      if (!normalizedNodeKey) {
+        return null;
+      }
+
+      for (const step of getKnownStepIdsFromState(state)) {
+        if (resolveStateStepKey(step, state) === normalizedNodeKey) {
+          return step;
+        }
+      }
+
+      return null;
+    }
+
     function inferRecordStepFromState(state = {}, preferredStatuses = []) {
-      const statuses = state?.stepStatuses || {};
       const preferredStatusSet = new Set(preferredStatuses.map((item) => String(item || '').trim()).filter(Boolean));
       const stepIds = getKnownStepIdsFromState(state);
       const currentStep = normalizeRecordStep(state?.currentStep);
+      const currentNodeStep = resolveNodeStepIdFromState(state?.currentNodeId, state);
 
-      if (currentStep && preferredStatusSet.has(String(statuses[currentStep] || '').trim())) {
+      if (currentNodeStep && preferredStatusSet.has(getStateStepStatus(currentNodeStep, state))) {
+        return currentNodeStep;
+      }
+
+      if (currentStep && preferredStatusSet.has(getStateStepStatus(currentStep, state))) {
         return currentStep;
       }
 
       const matchingSteps = stepIds
-        .filter((step) => preferredStatusSet.has(String(statuses[step] || '').trim()))
+        .filter((step) => preferredStatusSet.has(getStateStepStatus(step, state)))
         .sort((left, right) => right - left);
       if (matchingSteps.length) {
         return matchingSteps[0];
       }
 
       if (currentStep) {
-        const currentStatus = String(statuses[currentStep] || '').trim();
+        const currentStatus = getStateStepStatus(currentStep, state);
         if (!['', 'pending', 'completed', 'manual_completed', 'skipped'].includes(currentStatus)) {
           return currentStep;
         }

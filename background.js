@@ -7921,6 +7921,8 @@ const loggingStatus = self.MultiPageBackgroundLoggingStatus?.createLoggingStatus
   chrome,
   DEFAULT_STATE,
   getState,
+  getStepDefinitionForState,
+  getStepIdsForState,
   isRecoverableStep9AuthFailure,
   LOG_PREFIX,
   setState,
@@ -8292,6 +8294,9 @@ async function setDisplayStepStatus(stepKey, status, stateOverride = null) {
 }
 
 function getFirstUnfinishedStep(statuses = {}, stateOverride = null) {
+  if (typeof loggingStatus !== 'undefined' && loggingStatus?.getFirstUnfinishedStep) {
+    return loggingStatus.getFirstUnfinishedStep(statuses, stateOverride || {});
+  }
   const state = stateOverride || {};
   const activeStepIds = typeof getStepIdsForState === 'function'
     ? getStepIdsForState(state)
@@ -8305,6 +8310,9 @@ function getFirstUnfinishedStep(statuses = {}, stateOverride = null) {
 }
 
 function hasSavedProgress(statuses = {}, stateOverride = null) {
+  if (typeof loggingStatus !== 'undefined' && loggingStatus?.hasSavedProgress) {
+    return loggingStatus.hasSavedProgress(statuses, stateOverride || {});
+  }
   const state = stateOverride || {};
   const merged = { ...DEFAULT_STATE.stepStatuses, ...statuses };
   const activeStepIds = typeof getStepIdsForState === 'function'
@@ -8551,6 +8559,9 @@ function clearStopRequest() {
 }
 
 function getRunningSteps(statuses = {}, stateOverride = null) {
+  if (typeof loggingStatus !== 'undefined' && loggingStatus?.getRunningSteps) {
+    return loggingStatus.getRunningSteps(statuses, stateOverride || {});
+  }
   const state = stateOverride || {};
   const merged = { ...DEFAULT_STATE.stepStatuses, ...statuses };
   const activeStepIds = typeof getStepIdsForState === 'function'
@@ -10742,6 +10753,8 @@ const autoRunController = self.MultiPageBackgroundAutoRunController?.createAutoR
   getPendingAutoRunTimerPlan,
   getRunningSteps,
   getState,
+  getStepDefinitionForState,
+  getStepIdsForState,
   getStopRequested: () => stopRequested,
   hasSavedProgress,
   isAddPhoneAuthFailure,

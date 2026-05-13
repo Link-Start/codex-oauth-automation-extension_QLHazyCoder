@@ -51,3 +51,51 @@ test('logging/status add-phone detection ignores step 2 phone-entry switch failu
     'GPC OTP 超时，请重新创建任务'
   );
 });
+
+test('logging/status progress selectors prefer canonical node status when available', () => {
+  const source = fs.readFileSync('background/logging-status.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundLoggingStatus;`)(globalScope);
+
+  const loggingStatus = api.createLoggingStatus({
+    chrome: { runtime: { sendMessage() { return Promise.resolve(); } } },
+    DEFAULT_STATE: {
+      stepStatuses: {
+        1: 'pending',
+        2: 'pending',
+        3: 'pending',
+      },
+    },
+    getState: async () => ({ stepStatuses: {} }),
+    getStepDefinitionForState(step) {
+      return {
+        1: { id: 1, key: 'open-chatgpt' },
+        2: { id: 2, key: 'submit-signup-email' },
+        3: { id: 3, key: 'fill-password' },
+      }[Number(step)] || null;
+    },
+    getStepIdsForState: () => [1, 2, 3],
+    isRecoverableStep9AuthFailure: () => false,
+    LOG_PREFIX: '[test]',
+    setState: async () => {},
+    STOP_ERROR_MESSAGE: 'stopped',
+  });
+
+  const state = {
+    currentStep: 1,
+    stepStatuses: {
+      1: 'completed',
+      2: 'pending',
+      3: 'pending',
+    },
+    nodeStatuses: {
+      'open-chatgpt': 'completed',
+      'submit-signup-email': 'running',
+      'fill-password': 'pending',
+    },
+  };
+
+  assert.deepStrictEqual(loggingStatus.getRunningSteps(state.stepStatuses, state), [2]);
+  assert.equal(loggingStatus.getFirstUnfinishedStep(state.stepStatuses, state), 2);
+  assert.equal(loggingStatus.hasSavedProgress(state.stepStatuses, state), true);
+});

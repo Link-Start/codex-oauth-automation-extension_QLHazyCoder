@@ -43,3 +43,36 @@ test('auto-run account record status preserves the real failed step instead of p
     'step13_failed'
   );
 });
+
+test('auto-run account record status can infer failed step from current canonical node state', () => {
+  const source = fs.readFileSync('background/auto-run-controller.js', 'utf8');
+  const globalScope = {};
+  const api = new Function('self', `${source}; return self.MultiPageBackgroundAutoRunController;`)(globalScope);
+  const controller = api.createAutoRunController({
+    getStepDefinitionForState(step) {
+      return {
+        9: { id: 9, key: 'confirm-oauth' },
+        10: { id: 10, key: 'platform-verify' },
+      }[Number(step)] || null;
+    },
+    getStepIdsForState: () => [9, 10],
+  });
+
+  const state = {
+    currentStep: 10,
+    currentNodeId: 'confirm-oauth',
+    stepStatuses: {
+      9: 'pending',
+      10: 'completed',
+    },
+    nodeStatuses: {
+      'confirm-oauth': 'failed',
+      'platform-verify': 'pending',
+    },
+  };
+
+  assert.equal(
+    controller.resolveAutoRunAccountRecordStatus('failed', state, new Error('OAuth consent failed')),
+    'step9_failed'
+  );
+});
