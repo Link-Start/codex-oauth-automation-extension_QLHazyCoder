@@ -2,8 +2,10 @@
   root.MultiPageBackgroundKiroRegisterRunner = factory(root);
 })(typeof self !== 'undefined' ? self : globalThis, function createBackgroundKiroRegisterRunnerModule(root) {
   const kiroStateApi = root.MultiPageBackgroundKiroState || null;
+  const kiroTimeoutApi = root.MultiPageKiroTimeouts || null;
   const DEFAULT_REGION = kiroStateApi?.DEFAULT_REGION || 'us-east-1';
   const DEFAULT_TARGET_ID = kiroStateApi?.DEFAULT_TARGET_ID || 'kiro-rs';
+  const DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS = kiroTimeoutApi?.DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS || (3 * 60 * 1000);
   const DEVICE_LOGIN_START_URL = 'https://view.awsapps.com/start';
   const DEFAULT_SCOPES = Object.freeze([
     'codewhisperer:completions',
@@ -118,6 +120,36 @@
       return numeric;
     }
     return fallback;
+  }
+
+  function normalizeKiroPageLoadTimeoutMs(value, fallback = DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS) {
+    if (typeof kiroTimeoutApi?.normalizeKiroPageLoadTimeoutMs === 'function') {
+      return kiroTimeoutApi.normalizeKiroPageLoadTimeoutMs(value, fallback);
+    }
+    return normalizePositiveInteger(value, normalizePositiveInteger(fallback, DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS));
+  }
+
+  function createTimeoutBudget(timeoutMs = DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS) {
+    const totalTimeoutMs = normalizeKiroPageLoadTimeoutMs(timeoutMs, DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS);
+    const startedAt = Date.now();
+    return {
+      totalTimeoutMs,
+      getRemainingMs(minimumMs = 1) {
+        const normalizedMinimumMs = normalizePositiveInteger(minimumMs, 1);
+        return Math.max(normalizedMinimumMs, totalTimeoutMs - (Date.now() - startedAt));
+      },
+    };
+  }
+
+  function resolveTimeoutBudget(options = {}, fallbackTimeoutMs = DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS) {
+    if (options?.timeoutBudget && typeof options.timeoutBudget.getRemainingMs === 'function') {
+      return options.timeoutBudget;
+    }
+    return createTimeoutBudget(
+      options?.pageTimeoutMs
+      ?? options?.timeoutMs
+      ?? fallbackTimeoutMs
+    );
   }
 
   function buildOidcBaseUrl(region = DEFAULT_REGION) {
@@ -485,9 +517,10 @@
       if (!Number.isInteger(tabId)) {
         throw new Error('缺少 Kiro 注册页标签页，无法重新连接内容脚本。');
       }
+      const timeoutBudget = resolveTimeoutBudget(options);
       if (typeof waitForTabStableComplete === 'function') {
         await waitForTabStableComplete(tabId, {
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 300,
           stableMs: Number(options.stableMs) || 1200,
           initialDelayMs: Number(options.initialDelayMs) || 120,
@@ -497,7 +530,7 @@
         await ensureContentScriptReadyOnTab(KIRO_REGISTER_PAGE_SOURCE_ID, tabId, {
           inject: Array.isArray(KIRO_REGISTER_INJECT_FILES) ? KIRO_REGISTER_INJECT_FILES : null,
           injectSource: KIRO_REGISTER_PAGE_SOURCE_ID,
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 800,
           logMessage: options.injectLogMessage || 'Kiro 注册页已跳转，正在重新连接内容脚本...',
         });
@@ -505,8 +538,15 @@
     }
 
     function buildKiroRetryRecovery(tabId, options = {}) {
-      return async () => {
+      return async (_error, context = {}) => {
+        const remainingTimeoutMs = normalizeKiroPageLoadTimeoutMs(
+          options?.timeoutBudget?.getRemainingMs?.(1000)
+            ?? context?.remainingTimeoutMs,
+          DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS
+        );
         await reattachKiroRegisterPage(tabId, {
+          timeoutMs: remainingTimeoutMs,
+          timeoutBudget: createTimeoutBudget(remainingTimeoutMs),
           stableMs: Number(options.recoveryStableMs) || Number(options.stableMs) || 1200,
           initialDelayMs: Number(options.recoveryInitialDelayMs) || 120,
           injectLogMessage: options.recoveryInjectLogMessage || options.injectLogMessage || 'Kiro 注册页已跳转，正在重新连接内容脚本...',
@@ -518,9 +558,14 @@
       if (!Number.isInteger(tabId)) {
         throw new Error('缺少 Kiro 注册页标签页，无法继续执行。');
       }
+      const pageLoadTimeoutMs = normalizeKiroPageLoadTimeoutMs(
+        options.pageTimeoutMs,
+        DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS
+      );
+      const timeoutBudget = resolveTimeoutBudget(options, pageLoadTimeoutMs);
       if (typeof waitForTabStableComplete === 'function') {
         await waitForTabStableComplete(tabId, {
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 300,
           stableMs: Number(options.stableMs) || 1500,
           initialDelayMs: Number(options.initialDelayMs) || 150,
@@ -530,7 +575,7 @@
         await ensureContentScriptReadyOnTab(KIRO_REGISTER_PAGE_SOURCE_ID, tabId, {
           inject: Array.isArray(KIRO_REGISTER_INJECT_FILES) ? KIRO_REGISTER_INJECT_FILES : null,
           injectSource: KIRO_REGISTER_PAGE_SOURCE_ID,
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 800,
           logMessage: options.injectLogMessage || 'Kiro 注册页内容脚本未就绪，正在等待页面恢复...',
         });
@@ -541,20 +586,24 @@
           url: '',
         };
       }
+      const stateWaitTimeoutMs = timeoutBudget.getRemainingMs(1000);
       const result = await sendToContentScriptResilient(KIRO_REGISTER_PAGE_SOURCE_ID, {
         type: 'ENSURE_KIRO_PAGE_STATE',
         step: options.step || 0,
         source: 'background',
         payload: {
           targetStates: Array.isArray(options.targetStates) ? options.targetStates : [],
-          timeoutMs: Number(options.pageTimeoutMs) || 30000,
+          timeoutMs: stateWaitTimeoutMs,
           retryDelayMs: Number(options.pageRetryDelayMs) || 250,
           timeoutMessage: options.timeoutMessage || '',
         },
       }, {
-        timeoutMs: Math.max(30000, Number(options.pageTimeoutMs) || 30000),
+        timeoutMs: stateWaitTimeoutMs,
         retryDelayMs: 700,
-        onRetryableError: buildKiroRetryRecovery(tabId, options),
+        onRetryableError: buildKiroRetryRecovery(tabId, {
+          ...options,
+          timeoutBudget,
+        }),
         logMessage: options.readyLogMessage || '正在等待 Kiro 页面进入下一状态...',
       });
       if (result?.error) {
@@ -567,9 +616,14 @@
       if (!Number.isInteger(tabId)) {
         throw new Error('缺少 Kiro 注册页标签页，无法继续执行。');
       }
+      const pageLoadTimeoutMs = normalizeKiroPageLoadTimeoutMs(
+        options.pageTimeoutMs,
+        DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS
+      );
+      const timeoutBudget = resolveTimeoutBudget(options, pageLoadTimeoutMs);
       if (typeof waitForTabStableComplete === 'function') {
         await waitForTabStableComplete(tabId, {
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 300,
           stableMs: Number(options.stableMs) || 1200,
           initialDelayMs: Number(options.initialDelayMs) || 120,
@@ -579,7 +633,7 @@
         await ensureContentScriptReadyOnTab(KIRO_REGISTER_PAGE_SOURCE_ID, tabId, {
           inject: Array.isArray(KIRO_REGISTER_INJECT_FILES) ? KIRO_REGISTER_INJECT_FILES : null,
           injectSource: KIRO_REGISTER_PAGE_SOURCE_ID,
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 800,
           logMessage: options.injectLogMessage || 'Kiro 注册页切换中，正在等待页面恢复...',
         });
@@ -587,20 +641,24 @@
       if (typeof sendToContentScriptResilient !== 'function') {
         return { state: '', url: '' };
       }
+      const stateWaitTimeoutMs = timeoutBudget.getRemainingMs(1000);
       const result = await sendToContentScriptResilient(KIRO_REGISTER_PAGE_SOURCE_ID, {
         type: 'ENSURE_KIRO_STATE_CHANGE',
         step: options.step || 0,
         source: 'background',
         payload: {
           fromStates: Array.isArray(options.fromStates) ? options.fromStates : [],
-          timeoutMs: Number(options.pageTimeoutMs) || 30000,
+          timeoutMs: stateWaitTimeoutMs,
           retryDelayMs: Number(options.pageRetryDelayMs) || 250,
           timeoutMessage: options.timeoutMessage || '',
         },
       }, {
-        timeoutMs: Math.max(30000, Number(options.pageTimeoutMs) || 30000),
+        timeoutMs: stateWaitTimeoutMs,
         retryDelayMs: 700,
-        onRetryableError: buildKiroRetryRecovery(tabId, options),
+        onRetryableError: buildKiroRetryRecovery(tabId, {
+          ...options,
+          timeoutBudget,
+        }),
         logMessage: options.readyLogMessage || '正在等待 Kiro 页面完成跳转...',
       });
       if (result?.error) {

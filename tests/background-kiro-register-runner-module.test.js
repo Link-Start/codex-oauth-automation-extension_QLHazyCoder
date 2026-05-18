@@ -57,3 +57,12 @@ test('startBuilderIdDeviceLogin registers Builder ID client and returns login bo
   assert.equal(result.interval, 7);
   assert.equal(result.region, 'us-east-1');
 });
+
+test('kiro register runner uses a shared 3-minute page-load timeout budget', () => {
+  const source = fs.readFileSync('background/kiro/register-runner.js', 'utf8');
+  assert.match(source, /DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS/);
+  assert.match(source, /createTimeoutBudget/);
+  assert.match(source, /resolveTimeoutBudget/);
+  assert.match(source, /timeoutBudget\.getRemainingMs\(1000\)/);
+  assert.match(source, /onRetryableError: buildKiroRetryRecovery\(tabId, \{\s*\.\.\.options,\s*timeoutBudget,/);
+});

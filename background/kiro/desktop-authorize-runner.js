@@ -3,7 +3,9 @@
 })(typeof self !== 'undefined' ? self : globalThis, function createBackgroundKiroDesktopAuthorizeRunnerModule(root) {
   const kiroStateApi = root.MultiPageBackgroundKiroState || null;
   const desktopClientApi = root.MultiPageBackgroundKiroDesktopClient || null;
+  const kiroTimeoutApi = root.MultiPageKiroTimeouts || null;
   const DEFAULT_REGION = kiroStateApi?.DEFAULT_REGION || desktopClientApi?.DEFAULT_REGION || 'us-east-1';
+  const DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS = kiroTimeoutApi?.DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS || (3 * 60 * 1000);
   const MAIL_2925_FILTER_LOOKBACK_MS = 10 * 60 * 1000;
   const KIRO_DESKTOP_SOURCE_ID = 'kiro-desktop-authorize';
   const KIRO_AWS_VERIFICATION_CODE_PATTERNS = Object.freeze([
@@ -105,6 +107,36 @@
       return numeric;
     }
     return fallback;
+  }
+
+  function normalizeKiroPageLoadTimeoutMs(value, fallback = DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS) {
+    if (typeof kiroTimeoutApi?.normalizeKiroPageLoadTimeoutMs === 'function') {
+      return kiroTimeoutApi.normalizeKiroPageLoadTimeoutMs(value, fallback);
+    }
+    return normalizePositiveInteger(value, normalizePositiveInteger(fallback, DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS));
+  }
+
+  function createTimeoutBudget(timeoutMs = DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS) {
+    const totalTimeoutMs = normalizeKiroPageLoadTimeoutMs(timeoutMs, DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS);
+    const startedAt = Date.now();
+    return {
+      totalTimeoutMs,
+      getRemainingMs(minimumMs = 1) {
+        const normalizedMinimumMs = normalizePositiveInteger(minimumMs, 1);
+        return Math.max(normalizedMinimumMs, totalTimeoutMs - (Date.now() - startedAt));
+      },
+    };
+  }
+
+  function resolveTimeoutBudget(options = {}, fallbackTimeoutMs = DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS) {
+    if (options?.timeoutBudget && typeof options.timeoutBudget.getRemainingMs === 'function') {
+      return options.timeoutBudget;
+    }
+    return createTimeoutBudget(
+      options?.pageTimeoutMs
+      ?? options?.timeoutMs
+      ?? fallbackTimeoutMs
+    );
   }
 
   function getErrorMessage(error) {
@@ -418,9 +450,10 @@
       if (!Number.isInteger(tabId)) {
         throw new Error('缺少 Kiro 桌面授权页标签页，无法重新连接内容脚本。');
       }
+      const timeoutBudget = resolveTimeoutBudget(options);
       if (typeof waitForTabStableComplete === 'function') {
         await waitForTabStableComplete(tabId, {
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 300,
           stableMs: Number(options.stableMs) || 1200,
           initialDelayMs: Number(options.initialDelayMs) || 120,
@@ -430,7 +463,7 @@
         await ensureContentScriptReadyOnTab(KIRO_DESKTOP_SOURCE_ID, tabId, {
           inject: Array.isArray(KIRO_DESKTOP_AUTHORIZE_INJECT_FILES) ? KIRO_DESKTOP_AUTHORIZE_INJECT_FILES : null,
           injectSource: KIRO_DESKTOP_SOURCE_ID,
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 800,
           logMessage: options.injectLogMessage || 'Kiro 桌面授权页已跳转，正在重新连接内容脚本...',
         });
@@ -438,8 +471,15 @@
     }
 
     function buildDesktopRetryRecovery(tabId, options = {}) {
-      return async () => {
+      return async (_error, context = {}) => {
+        const remainingTimeoutMs = normalizeKiroPageLoadTimeoutMs(
+          options?.timeoutBudget?.getRemainingMs?.(1000)
+            ?? context?.remainingTimeoutMs,
+          DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS
+        );
         await reattachDesktopAuthorizePage(tabId, {
+          timeoutMs: remainingTimeoutMs,
+          timeoutBudget: createTimeoutBudget(remainingTimeoutMs),
           stableMs: Number(options.recoveryStableMs) || Number(options.stableMs) || 1200,
           initialDelayMs: Number(options.recoveryInitialDelayMs) || 120,
           injectLogMessage: options.recoveryInjectLogMessage || options.injectLogMessage || 'Kiro 桌面授权页已跳转，正在重新连接内容脚本...',
@@ -451,9 +491,14 @@
       if (!Number.isInteger(tabId)) {
         throw new Error('缺少 Kiro 桌面授权页标签页，无法继续执行。');
       }
+      const pageLoadTimeoutMs = normalizeKiroPageLoadTimeoutMs(
+        options.pageTimeoutMs,
+        DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS
+      );
+      const timeoutBudget = resolveTimeoutBudget(options, pageLoadTimeoutMs);
       if (typeof waitForTabStableComplete === 'function') {
         await waitForTabStableComplete(tabId, {
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 300,
           stableMs: Number(options.stableMs) || 1200,
           initialDelayMs: Number(options.initialDelayMs) || 120,
@@ -463,19 +508,23 @@
         await ensureContentScriptReadyOnTab(KIRO_DESKTOP_SOURCE_ID, tabId, {
           inject: Array.isArray(KIRO_DESKTOP_AUTHORIZE_INJECT_FILES) ? KIRO_DESKTOP_AUTHORIZE_INJECT_FILES : null,
           injectSource: KIRO_DESKTOP_SOURCE_ID,
-          timeoutMs: 45000,
+          timeoutMs: timeoutBudget.getRemainingMs(1000),
           retryDelayMs: 800,
           logMessage: options.injectLogMessage || 'Kiro 桌面授权页内容脚本未就绪，正在等待页面恢复...',
         });
       }
+      const stateWaitTimeoutMs = timeoutBudget.getRemainingMs(1000);
       const result = await sendToContentScriptResilient(KIRO_DESKTOP_SOURCE_ID, {
         type: 'GET_KIRO_DESKTOP_AUTHORIZE_STATE',
         step: options.step || 0,
         source: 'background',
       }, {
-        timeoutMs: 30000,
+        timeoutMs: stateWaitTimeoutMs,
         retryDelayMs: 700,
-        onRetryableError: buildDesktopRetryRecovery(tabId, options),
+        onRetryableError: buildDesktopRetryRecovery(tabId, {
+          ...options,
+          timeoutBudget,
+        }),
         logMessage: options.readyLogMessage || '正在读取 Kiro 桌面授权页状态...',
       });
       if (result?.error) {

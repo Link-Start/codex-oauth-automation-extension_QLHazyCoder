@@ -15,6 +15,7 @@ test('background imports shared source registry module', () => {
   assert.match(source, /shared\/flow-registry\.js/);
   assert.match(source, /shared\/settings-schema\.js/);
   assert.match(source, /shared\/source-registry\.js/);
+  assert.match(source, /shared\/kiro-timeouts\.js/);
 });
 
 test('manifest loads shared source registry before content utils in static bundles', () => {
@@ -39,6 +40,18 @@ test('manifest no longer ships a static Kiro content bundle', () => {
   });
 
   assert.equal(hasStaticKiroBundle, false);
+});
+
+test('background injects shared Kiro timeout module before Kiro content scripts', () => {
+  const source = fs.readFileSync('background.js', 'utf8');
+  assert.match(
+    source,
+    /const KIRO_REGISTER_INJECT_FILES = \['shared\/source-registry\.js', 'shared\/kiro-timeouts\.js', 'content\/utils\.js', 'content\/kiro\/register-page\.js'\];/
+  );
+  assert.match(
+    source,
+    /const KIRO_DESKTOP_AUTHORIZE_INJECT_FILES = \['shared\/source-registry\.js', 'shared\/kiro-timeouts\.js', 'content\/utils\.js', 'content\/kiro\/desktop-authorize-page\.js'\];/
+  );
 });
 
 test('shared source registry exposes canonical Kiro sources and drivers', () => {

@@ -1,6 +1,7 @@
 console.log('[MultiPage:kiro-register-page] Content script loaded on', location.href);
 
 const KIRO_REGISTER_PAGE_LISTENER_SENTINEL = 'data-multipage-kiro-register-page-listener';
+const DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS = globalThis.MultiPageKiroTimeouts?.DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS || (3 * 60 * 1000);
 const KIRO_CONTINUE_TEXT_PATTERN = /continue|继续/i;
 const KIRO_CONFIRM_CONTINUE_TEXT_PATTERN = /confirm and continue|确认并继续/i;
 const KIRO_ALLOW_ACCESS_TEXT_PATTERN = /allow access|允许访问/i;
@@ -312,7 +313,7 @@ function detectKiroRegisterPageState() {
 }
 
 async function waitForKiroState(predicate, options = {}) {
-  const timeoutMs = Math.max(1000, Math.floor(Number(options.timeoutMs) || 30000));
+  const timeoutMs = Math.max(1000, Math.floor(Number(options.timeoutMs) || DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS));
   const retryDelayMs = Math.max(100, Math.floor(Number(options.retryDelayMs) || 250));
   const start = Date.now();
 
@@ -405,7 +406,7 @@ async function submitKiroEmail(payload = {}) {
 
   const readyState = await ensureKiroRegisterPageState({
     targetStates: ['email_entry'],
-    timeoutMs: payload?.timeoutMs || 30000,
+    timeoutMs: payload?.timeoutMs || DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS,
     retryDelayMs: payload?.retryDelayMs || 250,
   });
   if (!readyState.emailInput || !readyState.continueButton) {
@@ -430,7 +431,7 @@ async function submitKiroName(payload = {}) {
 
   const readyState = await ensureKiroRegisterPageState({
     targetStates: ['name_entry'],
-    timeoutMs: payload?.timeoutMs || 30000,
+    timeoutMs: payload?.timeoutMs || DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS,
     retryDelayMs: payload?.retryDelayMs || 250,
   });
   if (!readyState.nameInput || !readyState.continueButton) {
@@ -455,7 +456,7 @@ async function submitKiroVerificationCode(payload = {}) {
 
   const readyState = await ensureKiroRegisterPageState({
     targetStates: ['otp_page'],
-    timeoutMs: payload?.timeoutMs || 30000,
+    timeoutMs: payload?.timeoutMs || DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS,
     retryDelayMs: payload?.retryDelayMs || 250,
   });
   if (!readyState.otpInput || !readyState.verifyButton) {
@@ -480,7 +481,7 @@ async function submitKiroPassword(payload = {}) {
 
   const readyState = await ensureKiroRegisterPageState({
     targetStates: ['password_page'],
-    timeoutMs: payload?.timeoutMs || 30000,
+    timeoutMs: payload?.timeoutMs || DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS,
     retryDelayMs: payload?.retryDelayMs || 250,
   });
   if (!readyState.passwordInput || !readyState.continueButton) {
@@ -511,7 +512,7 @@ async function submitKiroPassword(payload = {}) {
 async function confirmKiroRegisterConsent(payload = {}) {
   let currentState = await ensureKiroRegisterPageState({
     targetStates: ['authorization_page', 'success_page'],
-    timeoutMs: payload?.timeoutMs || 45000,
+    timeoutMs: payload?.timeoutMs || DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS,
     retryDelayMs: payload?.retryDelayMs || 250,
   });
 
@@ -528,7 +529,7 @@ async function confirmKiroRegisterConsent(payload = {}) {
     });
     simulateClick(currentState.actionButton);
     currentState = await waitForKiroAuthorizationAdvance(currentState, {
-      timeoutMs: payload?.timeoutMs || 45000,
+      timeoutMs: payload?.timeoutMs || DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS,
       retryDelayMs: payload?.retryDelayMs || 250,
       timeoutMessage: 'Kiro 授权按钮点击后页面未继续，请检查当前授权页状态。',
     });

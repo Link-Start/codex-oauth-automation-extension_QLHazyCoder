@@ -5,6 +5,7 @@ importScripts(
   'shared/settings-schema.js',
   'shared/source-registry.js',
   'shared/flow-capabilities.js',
+  'shared/kiro-timeouts.js',
   'managed-alias-utils.js',
   'mail2925-utils.js',
   'paypal-utils.js',
@@ -12744,8 +12745,8 @@ async function resumeAutoRun() {
 
 const SIGNUP_ENTRY_URL = 'https://chatgpt.com/';
 const SIGNUP_PAGE_INJECT_FILES = ['content/utils.js', 'content/operation-delay.js', 'content/auth-page-recovery.js', 'content/phone-country-utils.js', 'content/phone-auth.js', 'content/signup-page.js'];
-const KIRO_REGISTER_INJECT_FILES = ['shared/source-registry.js', 'content/utils.js', 'content/kiro/register-page.js'];
-const KIRO_DESKTOP_AUTHORIZE_INJECT_FILES = ['shared/source-registry.js', 'content/utils.js', 'content/kiro/desktop-authorize-page.js'];
+const KIRO_REGISTER_INJECT_FILES = ['shared/source-registry.js', 'shared/kiro-timeouts.js', 'content/utils.js', 'content/kiro/register-page.js'];
+const KIRO_DESKTOP_AUTHORIZE_INJECT_FILES = ['shared/source-registry.js', 'shared/kiro-timeouts.js', 'content/utils.js', 'content/kiro/desktop-authorize-page.js'];
 const panelBridge = self.MultiPageBackgroundPanelBridge?.createPanelBridge({
   chrome,
   addLog,

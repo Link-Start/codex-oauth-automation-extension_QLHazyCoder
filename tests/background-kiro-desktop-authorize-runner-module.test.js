@@ -46,3 +46,12 @@ test('parseDesktopCallbackUrl validates state and redirect port', () => {
   );
   assert.equal(badPort, null);
 });
+
+test('kiro desktop authorize runner uses a shared 3-minute page-load timeout budget', () => {
+  const source = fs.readFileSync('background/kiro/desktop-authorize-runner.js', 'utf8');
+  assert.match(source, /DEFAULT_KIRO_PAGE_LOAD_TIMEOUT_MS/);
+  assert.match(source, /createTimeoutBudget/);
+  assert.match(source, /resolveTimeoutBudget/);
+  assert.match(source, /timeoutBudget\.getRemainingMs\(1000\)/);
+  assert.match(source, /onRetryableError: buildDesktopRetryRecovery\(tabId, \{\s*\.\.\.options,\s*timeoutBudget,/);
+});
