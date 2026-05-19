@@ -290,7 +290,7 @@
     }
 
     async function closeConflictingTabsForSource(source, currentUrl, options = {}) {
-      const { excludeTabIds = [], preserveActiveTab = true } = options;
+      const { excludeTabIds = [], preserveActiveTab = false } = options;
       const excluded = new Set(excludeTabIds.filter((id) => Number.isInteger(id)));
       const state = await getState();
       const lastUrl = getSourceMapValue(state.sourceLastUrls, source);
@@ -620,6 +620,16 @@
       return Math.max(1, Math.min(requestedTimeoutMs, Math.floor(Number(remainingTimeoutMs))));
     }
 
+    function buildRetryableTransportTimeoutError(source, error) {
+      const rawMessage = error?.message || String(error || '');
+      if (isRetryableContentScriptTransportError(error)) {
+        return new Error(
+          `${getSourceLabel(source)} 页面刚完成跳转或刷新，内容脚本还没有重新接回；扩展已自动重试，但仍未恢复。请重试当前步骤。`
+        );
+      }
+      return new Error(rawMessage || `${getSourceLabel(source)} 页面通信失败。`);
+    }
+
     function getMessageDebugLabel(source, message, tabId = null) {
       const parts = [source || 'unknown', message?.type || 'UNKNOWN'];
       if (Number.isInteger(message?.step)) parts.push(`step=${message.step}`);
@@ -722,8 +732,11 @@
 
     async function reuseOrCreateTab(source, url, options = {}) {
       if (options.forceNew) {
-        await closeConflictingTabsForSource(source, url);
         const tab = await createAutomationTab({ url, active: true }, options);
+        await closeConflictingTabsForSource(source, url, {
+          excludeTabIds: [tab.id],
+          preserveActiveTab: false,
+        });
 
         if (options.inject) {
           await waitForTabUpdateComplete(tab.id);
@@ -749,7 +762,10 @@
       const alive = await isTabAlive(source);
       if (alive) {
         const tabId = await getTabId(source);
-        await closeConflictingTabsForSource(source, url, { excludeTabIds: [tabId] });
+        await closeConflictingTabsForSource(source, url, {
+          excludeTabIds: [tabId],
+          preserveActiveTab: false,
+        });
         const currentTab = await chrome.tabs.get(tabId);
         const sameUrl = currentTab.url === url;
         const shouldReloadOnReuse = sameUrl && options.reloadIfSameUrl;
@@ -830,8 +846,11 @@
         return tabId;
       }
 
-      await closeConflictingTabsForSource(source, url);
       const tab = await createAutomationTab({ url, active: true }, options);
+      await closeConflictingTabsForSource(source, url, {
+        excludeTabIds: [tab.id],
+        preserveActiveTab: false,
+      });
 
       if (options.inject) {
         await waitForTabUpdateComplete(tab.id);
@@ -882,6 +901,7 @@
         logMessage = '',
         logStep = null,
         logStepKey = '',
+        onRetryableError = null,
         responseTimeoutMs,
       } = options;
       const start = Date.now();
@@ -920,10 +940,23 @@
             logged = true;
           }
 
+          if (typeof onRetryableError === 'function') {
+            await onRetryableError(err, {
+              attempt,
+              elapsedMs: Date.now() - start,
+              remainingTimeoutMs: Math.max(0, timeoutMs - (Date.now() - start)),
+              source,
+              message,
+            });
+          }
+
           await sleepOrStop(retryDelayMs);
         }
       }
 
+      if (lastError && isRetryableContentScriptTransportError(lastError)) {
+        throw buildRetryableTransportTimeoutError(source, lastError);
+      }
       throw lastError || new Error(`等待 ${getSourceLabel(source)} 重新就绪超时。`);
     }
 

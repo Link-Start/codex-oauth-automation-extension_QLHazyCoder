@@ -28,6 +28,17 @@ test('step 1 cookie cleanup queries target domains and skips browsingData sweep 
             { domain: '.chatgpt.com', path: '/', name: 'session', storeId: 'store-a' },
           ];
         }
+        if (query?.domain === 'openai.com') {
+          return [
+            {
+              domain: '.openai.com',
+              path: '/',
+              name: 'shared',
+              storeId: 'store-a',
+              partitionKey: { topLevelSite: 'https://chatgpt.com' },
+            },
+          ];
+        }
         return [];
       },
       remove: async (details) => {
@@ -62,6 +73,12 @@ test('step 1 cookie cleanup queries target domains and skips browsingData sweep 
       url: 'https://chatgpt.com/',
       name: 'session',
       storeId: 'store-a',
+    },
+    {
+      url: 'https://openai.com/',
+      name: 'shared',
+      storeId: 'store-a',
+      partitionKey: { topLevelSite: 'https://chatgpt.com' },
     },
   ]);
   assert.deepStrictEqual(events.browsingDataCalls, []);
