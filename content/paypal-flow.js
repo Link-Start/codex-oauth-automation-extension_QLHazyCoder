@@ -8,9 +8,17 @@ const PAYPAL_HOSTED_STAGE_OUTSIDE = 'outside_paypal';
 const PAYPAL_HOSTED_STAGE_LOGIN = 'pay_login';
 const PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT = 'guest_checkout';
 const PAYPAL_HOSTED_STAGE_VERIFICATION = 'verification';
+const PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT = 'create_account';
 const PAYPAL_HOSTED_STAGE_REVIEW = 'review_consent';
 const PAYPAL_HOSTED_STAGE_APPROVAL = 'approval';
 const PAYPAL_HOSTED_STAGE_UNKNOWN = 'unknown';
+const PAYPAL_HOSTED_STEP_KEYS = {
+  [PAYPAL_HOSTED_STAGE_LOGIN]: 'paypal-hosted-email',
+  [PAYPAL_HOSTED_STAGE_VERIFICATION]: 'paypal-hosted-verification',
+  [PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT]: 'paypal-hosted-card',
+  [PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT]: 'paypal-hosted-create-account',
+  [PAYPAL_HOSTED_STAGE_REVIEW]: 'paypal-hosted-review',
+};
 
 if (document.documentElement.getAttribute(PAYPAL_FLOW_LISTENER_SENTINEL) !== '1') {
   document.documentElement.setAttribute(PAYPAL_FLOW_LISTENER_SENTINEL, '1');
@@ -255,13 +263,45 @@ function isHostedLoginPage() {
 }
 
 function isHostedGuestCheckoutPage() {
+  if (document.getElementById('cardNumber') || document.getElementById('billingLine1')) {
+    return true;
+  }
+  const pageText = normalizeText(document.body?.innerText || document.body?.textContent || '');
+  if (/create\s*(?:paypal\s*)?account|agree\s*(?:&|and)?\s*create|创建.*(?:账户|账号)/i.test(pageText)
+    && findHostedCreateAccountButton()) {
+    return false;
+  }
   return /\/checkoutweb\//i.test(getPayPalPathname())
-    || Boolean(document.getElementById('cardNumber'))
-    || Boolean(document.getElementById('billingLine1'));
+    && Boolean(document.getElementById('phone') || document.getElementById('email'));
 }
 
 function isHostedReviewPage() {
   return /\/webapps\/hermes/i.test(getPayPalPathname());
+}
+
+function findHostedCreateAccountButton() {
+  return document.getElementById('createAccount')
+    || document.getElementById('createAccountButton')
+    || document.querySelector('button[data-testid="createAccountButton"]')
+    || document.querySelector('button[data-testid="create-account-button"]')
+    || findClickableByText([
+      /agree\s*(?:&|and)?\s*create\s*(?:paypal\s*)?account/i,
+      /create\s*(?:paypal\s*)?account/i,
+      /同意.*创建|创建.*账户|创建.*账号/i,
+    ]);
+}
+
+function isHostedCreateAccountPage() {
+  if (document.getElementById('cardNumber') || document.getElementById('billingLine1')) {
+    return false;
+  }
+  const button = findHostedCreateAccountButton();
+  if (!button || !isVisibleElement(button) || !isEnabledControl(button)) {
+    return false;
+  }
+  const pageText = normalizeText(document.body?.innerText || document.body?.textContent || '');
+  return /create\s*(?:paypal\s*)?account|agree\s*(?:&|and)?\s*create|创建.*(?:账户|账号)/i.test(pageText)
+    || /create/i.test(getActionText(button));
 }
 
 function findHostedReviewConsentButton() {
@@ -288,6 +328,9 @@ function detectPayPalHostedStage() {
   }
   if (isHostedReviewPage() && findHostedReviewConsentButton()) {
     return PAYPAL_HOSTED_STAGE_REVIEW;
+  }
+  if (isHostedCreateAccountPage()) {
+    return PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT;
   }
   if (isHostedLoginPage()) {
     return PAYPAL_HOSTED_STAGE_LOGIN;
@@ -337,23 +380,102 @@ function findHostedSubmitButton() {
     ]);
 }
 
-async function clickHostedSubmitButton() {
+function getHostedStepKey(stage = '', fallback = 'plus-checkout-create') {
+  return PAYPAL_HOSTED_STEP_KEYS[stage] || fallback;
+}
+
+async function clickHostedSubmitButton(options = {}) {
+  const stepKey = String(options.stepKey || getHostedStepKey(options.stage)).trim();
+  const label = String(options.label || 'hosted-paypal-submit').trim();
+  const maxAttempts = Math.max(1, Math.floor(Number(options.maxAttempts) || 3));
+  let lastButtonText = '';
+  let lastDisabled = false;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const button = await waitUntil(() => {
+      const candidate = findHostedSubmitButton();
+      return candidate && isVisibleElement(candidate) ? candidate : null;
+    }, {
+      intervalMs: 500,
+      timeoutMs: 15000,
+      timeoutMessage: 'PayPal hosted checkout 未找到可点击的继续/提交按钮。',
+    });
+    lastButtonText = getActionText(button);
+    lastDisabled = !isEnabledControl(button);
+    if (lastDisabled) {
+      if (attempt >= maxAttempts) {
+        throw new Error('PayPal hosted checkout 继续/提交按钮长时间不可用。');
+      }
+      await sleep(1000);
+      continue;
+    }
+
+    await performPayPalOperationWithDelay({ stepKey, kind: 'click', label }, async () => {
+      simulateClick(button);
+    });
+    await sleep(1000);
+    return {
+      clicked: true,
+      buttonText: lastButtonText,
+      verificationRequired: hasHostedVerificationInputs(),
+      attempt,
+    };
+  }
+  return {
+    clicked: false,
+    buttonText: lastButtonText,
+    disabled: lastDisabled,
+  };
+}
+
+function normalizeHostedPhoneDigits(value = '') {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function verifyHostedPhoneBeforeSubmit(expectedPhone = '') {
+  const phoneInput = document.getElementById('phone');
+  if (!phoneInput || !isVisibleElement(phoneInput)) {
+    throw new Error('PayPal hosted checkout 未找到电话输入框。');
+  }
+  const expectedDigits = normalizeHostedPhoneDigits(expectedPhone || PAYPAL_HOSTED_DEFAULT_PHONE);
+  const renderedDigits = normalizeHostedPhoneDigits(phoneInput.value || '');
+  if (!expectedDigits) {
+    throw new Error('PayPal hosted checkout 电话配置为空。');
+  }
+  const comparableRenderedDigits = renderedDigits.length > expectedDigits.length
+    ? renderedDigits.slice(-expectedDigits.length)
+    : renderedDigits;
+  if (comparableRenderedDigits !== expectedDigits) {
+    throw new Error(`PayPal hosted checkout 电话不一致：配置 ${expectedDigits}，页面 ${renderedDigits || '(空)'}。`);
+  }
+  return {
+    payloadPhoneDigits: expectedDigits,
+    renderedPhoneDigits: renderedDigits,
+    phoneMatched: true,
+  };
+}
+
+async function clickHostedCreateAccount(payload = {}) {
+  await waitForDocumentComplete();
   const button = await waitUntil(() => {
-    const candidate = findHostedSubmitButton();
+    const candidate = findHostedCreateAccountButton();
     return candidate && isVisibleElement(candidate) && isEnabledControl(candidate) ? candidate : null;
   }, {
     intervalMs: 500,
-    timeoutMs: 15000,
-    timeoutMessage: 'PayPal hosted checkout 未找到可点击的继续/提交按钮。',
+    timeoutMs: 30000,
+    timeoutMessage: 'PayPal hosted checkout 未找到创建账号确认按钮。',
   });
-  await performPayPalOperationWithDelay({ stepKey: 'plus-checkout-create', kind: 'click', label: 'hosted-paypal-submit' }, async () => {
+  await performPayPalOperationWithDelay({
+    stepKey: getHostedStepKey(PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT),
+    kind: 'click',
+    label: 'hosted-paypal-create-account',
+  }, async () => {
     simulateClick(button);
   });
-  await sleep(1000);
   return {
+    stage: PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT,
     clicked: true,
+    submitted: true,
     buttonText: getActionText(button),
-    verificationRequired: hasHostedVerificationInputs(),
   };
 }
 
@@ -408,7 +530,10 @@ async function submitHostedLogin(payload = {}) {
     throw new Error('PayPal hosted checkout 未找到邮箱输入框。');
   }
   refillPayPalEmailInput(emailInput, email);
-  const clickResult = await clickHostedSubmitButton();
+  const clickResult = await clickHostedSubmitButton({
+    stage: PAYPAL_HOSTED_STAGE_LOGIN,
+    label: 'hosted-paypal-email-submit',
+  });
   return {
     stage: PAYPAL_HOSTED_STAGE_LOGIN,
     submitted: true,
@@ -427,7 +552,11 @@ async function fillHostedVerificationCode(payload = {}) {
   if (inputs.length < 6) {
     throw new Error('PayPal hosted checkout 当前页面未显示验证码输入框。');
   }
-  await performPayPalOperationWithDelay({ stepKey: 'plus-checkout-create', kind: 'fill', label: 'hosted-paypal-verification-code' }, async () => {
+  await performPayPalOperationWithDelay({
+    stepKey: getHostedStepKey(PAYPAL_HOSTED_STAGE_VERIFICATION),
+    kind: 'fill',
+    label: 'hosted-paypal-verification-code',
+  }, async () => {
     inputs.forEach((input, index) => fillInput(input, code[index] || ''));
   });
   return {
@@ -468,11 +597,18 @@ async function fillHostedGuestCheckout(payload = {}) {
   fillHostedInputById('billingCity', address.city || '');
   fillHostedInputById('billingPostalCode', address.zip || address.postalCode || '');
   selectHostedOptionByIdText('billingState', address.state || address.region || '');
-  const clickResult = await clickHostedSubmitButton();
+  const phoneCheck = verifyHostedPhoneBeforeSubmit(values.phone);
+  const clickResult = await clickHostedSubmitButton({
+    stage: PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT,
+    label: 'hosted-paypal-card-submit',
+    maxAttempts: 4,
+  });
   return {
     stage: PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT,
     submitted: true,
     verificationRequired: Boolean(clickResult.verificationRequired),
+    payloadPhone: values.phone,
+    ...phoneCheck,
   };
 }
 
@@ -486,7 +622,11 @@ async function clickHostedReviewConsent() {
     timeoutMs: 30000,
     timeoutMessage: 'PayPal hosted checkout 未找到账单确认按钮。',
   });
-  await performPayPalOperationWithDelay({ stepKey: 'plus-checkout-create', kind: 'click', label: 'hosted-paypal-review-consent' }, async () => {
+  await performPayPalOperationWithDelay({
+    stepKey: getHostedStepKey(PAYPAL_HOSTED_STAGE_REVIEW),
+    kind: 'click',
+    label: 'hosted-paypal-review-consent',
+  }, async () => {
     simulateClick(button);
   });
   return {
@@ -497,6 +637,16 @@ async function clickHostedReviewConsent() {
 
 async function runPayPalHostedCheckoutStep(payload = {}) {
   const stage = detectPayPalHostedStage();
+  const expectedStage = String(payload.expectedStage || '').trim();
+  if (expectedStage && stage !== expectedStage) {
+    return {
+      stage,
+      expectedStage,
+      submitted: false,
+      skipped: true,
+      approveReady: Boolean(findApproveButton()),
+    };
+  }
   if (stage === PAYPAL_HOSTED_STAGE_VERIFICATION) {
     return payload.verificationCode || payload.code
       ? fillHostedVerificationCode(payload)
@@ -507,6 +657,9 @@ async function runPayPalHostedCheckoutStep(payload = {}) {
   }
   if (stage === PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT) {
     return fillHostedGuestCheckout(payload);
+  }
+  if (stage === PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT) {
+    return clickHostedCreateAccount(payload);
   }
   if (stage === PAYPAL_HOSTED_STAGE_REVIEW) {
     return clickHostedReviewConsent();
@@ -520,6 +673,7 @@ async function runPayPalHostedCheckoutStep(payload = {}) {
 
 function inspectPayPalHostedState() {
   const stage = detectPayPalHostedStage();
+  const createAccountButton = findHostedCreateAccountButton();
   return {
     url: location.href,
     readyState: document.readyState,
@@ -527,6 +681,7 @@ function inspectPayPalHostedState() {
     verificationInputsVisible: hasHostedVerificationInputs(),
     hasGuestCardFields: Boolean(document.getElementById('cardNumber')),
     hasHostedEmailInput: Boolean(document.getElementById('email') || findEmailInput()),
+    createAccountReady: Boolean(createAccountButton && isVisibleElement(createAccountButton) && isEnabledControl(createAccountButton)),
     reviewConsentReady: Boolean(findHostedReviewConsentButton()),
     approveReady: Boolean(findApproveButton()),
     bodyTextPreview: normalizeText(document.body?.innerText || '').slice(0, 240),

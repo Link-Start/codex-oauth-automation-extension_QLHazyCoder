@@ -20,6 +20,28 @@
   const HOSTED_CHECKOUT_VERIFICATION_POLL_ATTEMPTS = 12;
   const HOSTED_CHECKOUT_VERIFICATION_POLL_INTERVAL_MS = 5000;
   const HOSTED_CHECKOUT_DEFAULT_PHONE = '1234567890';
+  const PAYPAL_HOSTED_STAGE_OUTSIDE = 'outside_paypal';
+  const PAYPAL_HOSTED_STAGE_LOGIN = 'pay_login';
+  const PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT = 'guest_checkout';
+  const PAYPAL_HOSTED_STAGE_VERIFICATION = 'verification';
+  const PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT = 'create_account';
+  const PAYPAL_HOSTED_STAGE_REVIEW = 'review_consent';
+  const PAYPAL_HOSTED_STAGE_APPROVAL = 'approval';
+  const PAYPAL_HOSTED_STAGE_UNKNOWN = 'unknown';
+  const PAYPAL_HOSTED_STEP_OPENAI_CHECKOUT = 'paypal-hosted-openai-checkout';
+  const PAYPAL_HOSTED_STEP_EMAIL = 'paypal-hosted-email';
+  const PAYPAL_HOSTED_STEP_VERIFICATION = 'paypal-hosted-verification';
+  const PAYPAL_HOSTED_STEP_CARD = 'paypal-hosted-card';
+  const PAYPAL_HOSTED_STEP_CREATE_ACCOUNT = 'paypal-hosted-create-account';
+  const PAYPAL_HOSTED_STEP_REVIEW = 'paypal-hosted-review';
+  const PAYPAL_HOSTED_STEP_META = Object.freeze({
+    [PAYPAL_HOSTED_STEP_OPENAI_CHECKOUT]: { step: 7, label: '无卡直绑 OpenAI Checkout' },
+    [PAYPAL_HOSTED_STEP_EMAIL]: { step: 8, label: '无卡直绑 PayPal 邮箱页' },
+    [PAYPAL_HOSTED_STEP_VERIFICATION]: { step: 9, label: '无卡直绑 PayPal 验证码页' },
+    [PAYPAL_HOSTED_STEP_CARD]: { step: 10, label: '无卡直绑 PayPal 资料页' },
+    [PAYPAL_HOSTED_STEP_CREATE_ACCOUNT]: { step: 11, label: '无卡直绑 PayPal 创建确认页' },
+    [PAYPAL_HOSTED_STEP_REVIEW]: { step: 12, label: '无卡直绑 PayPal 授权复核页' },
+  });
 
   function createPlusCheckoutCreateExecutor(deps = {}) {
     const {
@@ -29,7 +51,10 @@
       createAutomationTab = null,
       ensureContentScriptReadyOnTabUntilStopped,
       fetch: fetchImpl = null,
+      getTabId = null,
       getState = null,
+      isTabAlive = null,
+      queryTabsInAutomationWindow = null,
       registerTab,
       sendTabMessageUntilStopped,
       setState,
@@ -43,6 +68,15 @@
       return rawAddLog(message, level, {
         step: 6,
         stepKey: 'plus-checkout-create',
+        ...(options && typeof options === 'object' ? options : {}),
+      });
+    }
+
+    function addHostedStepLog(stepKey, message, level = 'info', options = {}) {
+      const meta = PAYPAL_HOSTED_STEP_META[stepKey] || {};
+      return rawAddLog(message, level, {
+        step: meta.step || 6,
+        stepKey,
         ...(options && typeof options === 'object' ? options : {}),
       });
     }
@@ -110,6 +144,178 @@
       return /^https:\/\/(?:pay\.openai\.com|checkout\.stripe\.com)\/c\/pay(?:\/|$)/i.test(String(url || ''));
     }
 
+    function isHostedCheckoutRuntimeUrl(url = '') {
+      return isHostedOpenAiCheckoutUrl(url) || isPayPalUrl(url) || isHostedCheckoutSuccessUrl(url);
+    }
+
+    function getHostedStepNumber(stepKey = '') {
+      return PAYPAL_HOSTED_STEP_META[stepKey]?.step || 6;
+    }
+
+    function normalizeHostedPhoneForPayload(phone = '') {
+      const digits = String(phone || '').replace(/\D/g, '');
+      if (!digits) {
+        return HOSTED_CHECKOUT_DEFAULT_PHONE;
+      }
+      if (digits.length > 10 && digits.startsWith('1')) {
+        return digits.slice(-10);
+      }
+      return digits.length > 10 ? digits.slice(-10) : digits;
+    }
+
+    function getHostedProfileFromState(state = {}) {
+      const profile = state?.plusHostedCheckoutGuestProfile || state?.hostedCheckoutGuestProfile || null;
+      return profile && typeof profile === 'object' && !Array.isArray(profile) ? profile : null;
+    }
+
+    async function getLatestHostedState(state = {}) {
+      const latestState = typeof getState === 'function' ? await getState().catch(() => ({})) : {};
+      return {
+        ...(latestState && typeof latestState === 'object' ? latestState : {}),
+        ...(state && typeof state === 'object' ? state : {}),
+      };
+    }
+
+    async function ensureHostedGuestProfile(state = {}) {
+      const mergedState = await getLatestHostedState(state);
+      const existingProfile = getHostedProfileFromState(mergedState) || {};
+      const config = await getHostedCheckoutRuntimeConfig(mergedState);
+      const address = existingProfile.address && typeof existingProfile.address === 'object'
+        ? existingProfile.address
+        : await fetchHostedCheckoutAddress();
+      const generatedProfile = buildHostedGuestProfile(address, {
+        phone: normalizeHostedPhoneForPayload(config.phone),
+      });
+      const nextProfile = {
+        ...generatedProfile,
+        ...existingProfile,
+        address,
+        phone: normalizeHostedPhoneForPayload(config.phone || existingProfile.phone),
+      };
+      await setState({
+        plusHostedCheckoutGuestProfile: nextProfile,
+        plusHostedCheckoutPhoneDigits: nextProfile.phone,
+      });
+      return {
+        profile: nextProfile,
+        config,
+      };
+    }
+
+    async function getTabById(tabId) {
+      const normalizedTabId = Number(tabId) || 0;
+      if (!normalizedTabId || !chrome?.tabs?.get) {
+        return null;
+      }
+      return chrome.tabs.get(normalizedTabId).catch(() => null);
+    }
+
+    async function registerHostedCheckoutTab(tabId, url = '') {
+      if (typeof registerTab !== 'function' || !Number.isInteger(Number(tabId))) {
+        return;
+      }
+      await registerTab(isPayPalUrl(url) ? PAYPAL_SOURCE : PLUS_CHECKOUT_SOURCE, Number(tabId));
+    }
+
+    async function findOpenHostedCheckoutTabId() {
+      const queryTabs = typeof queryTabsInAutomationWindow === 'function'
+        ? queryTabsInAutomationWindow
+        : (chrome?.tabs?.query ? (queryInfo) => chrome.tabs.query(queryInfo) : null);
+      if (typeof queryTabs !== 'function') {
+        return 0;
+      }
+      const tabs = await queryTabs({}).catch(() => []);
+      const candidates = (Array.isArray(tabs) ? tabs : [])
+        .filter((tab) => Number.isInteger(tab?.id) && isHostedCheckoutRuntimeUrl(tab.url || ''));
+      if (!candidates.length) {
+        return 0;
+      }
+      const match = candidates.find((tab) => tab.active && tab.currentWindow)
+        || candidates.find((tab) => tab.active)
+        || candidates[0];
+      if (match?.id && chrome?.tabs?.update) {
+        await chrome.tabs.update(match.id, { active: true }).catch(() => {});
+      }
+      await registerHostedCheckoutTab(match.id, match.url || '');
+      return match?.id || 0;
+    }
+
+    async function resolveHostedCheckoutTabId(state = {}, stepKey = '') {
+      const storedTabId = Number(state?.plusCheckoutTabId) || 0;
+      const storedTab = await getTabById(storedTabId);
+      if (storedTab?.id && isHostedCheckoutRuntimeUrl(storedTab.url || '')) {
+        await registerHostedCheckoutTab(storedTab.id, storedTab.url || '');
+        return storedTab.id;
+      }
+
+      if (typeof getTabId === 'function') {
+        const paypalTabId = await Promise.resolve(getTabId(PAYPAL_SOURCE)).catch(() => 0);
+        const paypalAlive = typeof isTabAlive !== 'function'
+          ? Boolean(paypalTabId)
+          : await Promise.resolve(isTabAlive(PAYPAL_SOURCE)).catch(() => false);
+        if (paypalTabId && paypalAlive) {
+          return paypalTabId;
+        }
+        const checkoutTabId = await Promise.resolve(getTabId(PLUS_CHECKOUT_SOURCE)).catch(() => 0);
+        const checkoutAlive = typeof isTabAlive !== 'function'
+          ? Boolean(checkoutTabId)
+          : await Promise.resolve(isTabAlive(PLUS_CHECKOUT_SOURCE)).catch(() => false);
+        if (checkoutTabId && checkoutAlive) {
+          return checkoutTabId;
+        }
+      }
+
+      const discoveredTabId = await findOpenHostedCheckoutTabId();
+      if (discoveredTabId) {
+        await addHostedStepLog(stepKey, `步骤 ${getHostedStepNumber(stepKey)}：已从当前浏览器标签中发现 PayPal 无卡直绑页面，正在接管继续执行。`, 'info');
+        return discoveredTabId;
+      }
+
+      throw new Error(`步骤 ${getHostedStepNumber(stepKey)}：未找到 PayPal 无卡直绑标签页，请先完成创建 checkout 节点。`);
+    }
+
+    async function getHostedCurrentUrl(tabId) {
+      const tab = await getTabById(tabId);
+      return String(tab?.url || '').trim();
+    }
+
+    async function updateHostedCheckoutTabState(tabId, payload = {}) {
+      const currentUrl = await getHostedCurrentUrl(tabId);
+      await setState({
+        plusCheckoutTabId: tabId,
+        plusCheckoutUrl: currentUrl,
+        ...(payload && typeof payload === 'object' ? payload : {}),
+      });
+      return currentUrl;
+    }
+
+    async function completeHostedStep(stepKey, tabId, payload = {}) {
+      const currentUrl = await updateHostedCheckoutTabState(tabId, payload);
+      await completeNodeFromBackground(stepKey, {
+        plusCheckoutUrl: currentUrl,
+        ...(payload && typeof payload === 'object' ? payload : {}),
+      });
+    }
+
+    async function completeHostedStepIfSuccessful(stepKey, tabId, state = {}, options = {}) {
+      const currentUrl = await getHostedCurrentUrl(tabId);
+      if (!isHostedCheckoutSuccessUrl(currentUrl)) {
+        return false;
+      }
+      const config = await getHostedCheckoutRuntimeConfig(state);
+      const shouldWait = Boolean(options.waitBeforeComplete);
+      if (shouldWait && config.oauthDelaySeconds > 0) {
+        await addHostedStepLog(stepKey, `步骤 ${getHostedStepNumber(stepKey)}：支付成功后等待 ${config.oauthDelaySeconds} 秒，再继续账号接入。`, 'info');
+        await sleepWithStop(config.oauthDelaySeconds * 1000);
+      }
+      await completeHostedStep(stepKey, tabId, {
+        plusReturnUrl: currentUrl,
+        plusHostedCheckoutCompleted: true,
+        plusHostedCheckoutOauthDelaySeconds: config.oauthDelaySeconds,
+      });
+      return true;
+    }
+
     async function waitForUrlMatch(tabId, matcher, timeoutMs = 30000, retryDelayMs = 500) {
       const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 30000);
       while (Date.now() < deadline) {
@@ -130,18 +336,18 @@
       const latestState = typeof getState === 'function' ? await getState().catch(() => ({})) : {};
       return {
         verificationUrl: String(
-          state?.hostedCheckoutVerificationUrl
-          || latestState?.hostedCheckoutVerificationUrl
+          latestState?.hostedCheckoutVerificationUrl
+          || state?.hostedCheckoutVerificationUrl
           || ''
         ).trim(),
         phone: String(
-          state?.hostedCheckoutPhoneNumber
-          || latestState?.hostedCheckoutPhoneNumber
+          latestState?.hostedCheckoutPhoneNumber
+          || state?.hostedCheckoutPhoneNumber
           || HOSTED_CHECKOUT_DEFAULT_PHONE
         ).trim(),
         oauthDelaySeconds: normalizeHostedCheckoutDelaySeconds(
-          state?.plusHostedCheckoutOauthDelaySeconds
-          ?? latestState?.plusHostedCheckoutOauthDelaySeconds
+          latestState?.plusHostedCheckoutOauthDelaySeconds
+          ?? state?.plusHostedCheckoutOauthDelaySeconds
         ),
       };
     }
@@ -386,72 +592,80 @@
       return result || {};
     }
 
-    async function runHostedPayPalCheckout(tabId, profile, config) {
-      const deadline = Date.now() + HOSTED_CHECKOUT_PAYPAL_TIMEOUT_MS;
-      while (Date.now() < deadline) {
-        throwIfStopped();
-        const tab = await chrome?.tabs?.get?.(tabId).catch(() => null);
-        if (!tab) {
-          throw new Error('步骤 6：PayPal 无卡直绑标签页已关闭。');
-        }
-        const currentUrl = String(tab.url || '').trim();
-        if (isHostedCheckoutSuccessUrl(currentUrl)) {
-          await addLog('步骤 6：PayPal 无卡直绑已回到 ChatGPT 支付成功页。', 'ok');
-          return currentUrl;
-        }
-        if (!isPayPalUrl(currentUrl)) {
-          await addLog(`步骤 6：无卡直绑已离开 PayPal（${currentUrl || '空 URL'}），继续等待支付成功页。`, 'info');
-          await sleepWithStop(1000);
-          continue;
-        }
-
-        const pageState = await getHostedPayPalState(tabId);
-        if (pageState.hostedStage === 'verification' && pageState.verificationInputsVisible) {
-          const verificationCode = await pollHostedVerificationCode(config.verificationUrl);
-          await runHostedPayPalStep(tabId, { verificationCode });
-          await sleepWithStop(1000);
-          continue;
-        }
-        if (pageState.hostedStage === 'pay_login') {
-          await addLog('步骤 6：正在填写 PayPal 无卡直绑登录邮箱。', 'info');
-          await runHostedPayPalStep(tabId, { email: profile.email });
-          await sleepWithStop(1000);
-          continue;
-        }
-        if (pageState.hostedStage === 'guest_checkout') {
-          await addLog('步骤 6：正在填写 PayPal 无卡直绑卡支付资料。', 'info');
-          await runHostedPayPalStep(tabId, {
-            ...profile,
-            phone: config.phone || profile.phone,
-          });
-          await sleepWithStop(1500);
-          continue;
-        }
-        if (pageState.hostedStage === 'review_consent') {
-          await addLog('步骤 6：正在确认 PayPal 无卡直绑账单复核页。', 'info');
-          await runHostedPayPalStep(tabId, {});
-          await sleepWithStop(1000);
-          continue;
-        }
-        if (pageState.hostedStage === 'approval') {
-          throw new Error('步骤 6：无卡直绑流程进入普通 PayPal 授权页，请检查支付方式是否选择正确。');
-        }
-        await sleepWithStop(1000);
+    function getHostedStageOrder(stage = '') {
+      switch (stage) {
+        case PAYPAL_HOSTED_STAGE_LOGIN:
+          return 1;
+        case PAYPAL_HOSTED_STAGE_VERIFICATION:
+          return 2;
+        case PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT:
+          return 3;
+        case PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT:
+          return 4;
+        case PAYPAL_HOSTED_STAGE_REVIEW:
+          return 5;
+        case PAYPAL_HOSTED_STAGE_OUTSIDE:
+          return 6;
+        default:
+          return 0;
       }
-      throw new Error('步骤 6：PayPal 无卡直绑自动化超时，未等到支付成功页。');
     }
 
-    async function waitHostedSuccessDelayAndComplete(tabId, state = {}, successUrl = '') {
-      const config = await getHostedCheckoutRuntimeConfig(state);
-      if (config.oauthDelaySeconds > 0) {
-        await addLog(`步骤 6：支付成功后等待 ${config.oauthDelaySeconds} 秒，再继续账号接入。`, 'info');
-        await sleepWithStop(config.oauthDelaySeconds * 1000);
+    function isHostedStageAtOrAfter(stage = '', expectedStage = '') {
+      const currentOrder = getHostedStageOrder(stage);
+      const expectedOrder = getHostedStageOrder(expectedStage);
+      return currentOrder > 0 && expectedOrder > 0 && currentOrder >= expectedOrder;
+    }
+
+    async function waitForHostedPayPalStage(tabId, predicate, options = {}) {
+      const timeoutMs = Math.max(1000, Number(options.timeoutMs) || HOSTED_CHECKOUT_TRANSITION_TIMEOUT_MS);
+      const intervalMs = Math.max(100, Number(options.intervalMs) || 500);
+      const label = String(options.label || 'PayPal 无卡直绑页面').trim();
+      const deadline = Date.now() + timeoutMs;
+      let lastStage = '';
+      while (Date.now() < deadline) {
+        throwIfStopped();
+        const currentUrl = await getHostedCurrentUrl(tabId);
+        if (isHostedCheckoutSuccessUrl(currentUrl)) {
+          return {
+            successUrl: currentUrl,
+            hostedStage: PAYPAL_HOSTED_STAGE_OUTSIDE,
+          };
+        }
+        if (!isPayPalUrl(currentUrl)) {
+          await sleepWithStop(intervalMs);
+          continue;
+        }
+        try {
+          const pageState = await getHostedPayPalState(tabId);
+          lastStage = pageState?.hostedStage || lastStage;
+          if (predicate(pageState)) {
+            return pageState;
+          }
+        } catch (error) {
+          lastStage = error?.message || lastStage;
+        }
+        await sleepWithStop(intervalMs);
       }
-      await completeNodeFromBackground('plus-checkout-create', {
-        plusReturnUrl: successUrl,
-        plusHostedCheckoutCompleted: true,
-        plusHostedCheckoutOauthDelaySeconds: config.oauthDelaySeconds,
-      });
+      throw new Error(`${label}等待超时${lastStage ? `（最后状态：${lastStage}）` : ''}。`);
+    }
+
+    async function waitForHostedUrlAfterAction(tabId, matcher, options = {}) {
+      const timeoutMs = Math.max(1000, Number(options.timeoutMs) || HOSTED_CHECKOUT_TRANSITION_TIMEOUT_MS);
+      const intervalMs = Math.max(100, Number(options.intervalMs) || 500);
+      const label = String(options.label || 'PayPal 无卡直绑跳转').trim();
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        throwIfStopped();
+        const currentTab = await getTabById(tabId);
+        const currentUrl = String(currentTab?.url || '').trim();
+        if (matcher(currentUrl, currentTab)) {
+          await waitForTabCompleteUntilStopped(tabId).catch(() => {});
+          return currentUrl;
+        }
+        await sleepWithStop(intervalMs);
+      }
+      throw new Error(`${label}等待超时。`);
     }
 
     function resolveCheckoutTargetUrl(result = {}, paymentMethod = PLUS_PAYMENT_METHOD_PAYPAL) {
@@ -484,56 +698,298 @@
       );
       const landedUrl = String(landedTab?.url || targetCheckoutUrl || '').trim();
 
+      const isAlreadySuccessful = isHostedCheckoutSuccessUrl(landedUrl);
       await setState({
         plusCheckoutTabId: tabId,
         plusCheckoutUrl: landedUrl,
         plusCheckoutCountry: result.country || 'US',
         plusCheckoutCurrency: result.currency || 'USD',
         plusCheckoutSource: PLUS_PAYMENT_METHOD_PAYPAL_HOSTED,
-        plusReturnUrl: '',
+        plusReturnUrl: isAlreadySuccessful ? landedUrl : '',
+        plusHostedCheckoutCompleted: isAlreadySuccessful,
       });
 
-      await addLog(`步骤 6：PayPal 无卡直绑页面已就绪（${result.country || 'US'} ${result.currency || 'USD'}），开始自动完成直绑支付链路。`, 'info');
+      await addLog(`步骤 6：PayPal 无卡直绑页面已就绪（${result.country || 'US'} ${result.currency || 'USD'}），准备进入页面级直绑节点。`, 'info');
 
-      if (isHostedCheckoutSuccessUrl(landedUrl)) {
-        await waitHostedSuccessDelayAndComplete(tabId, state, landedUrl);
+      await completeNodeFromBackground('plus-checkout-create', {
+        plusCheckoutCountry: result.country || 'US',
+        plusCheckoutCurrency: result.currency || 'USD',
+        plusCheckoutSource: PLUS_PAYMENT_METHOD_PAYPAL_HOSTED,
+        plusCheckoutUrl: landedUrl,
+        plusReturnUrl: isAlreadySuccessful ? landedUrl : '',
+        plusHostedCheckoutCompleted: isAlreadySuccessful,
+      });
+    }
+
+    async function executePayPalHostedOpenAiCheckout(state = {}) {
+      const stepKey = PAYPAL_HOSTED_STEP_OPENAI_CHECKOUT;
+      const stepNumber = getHostedStepNumber(stepKey);
+      const tabId = await resolveHostedCheckoutTabId(state, stepKey);
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state)) {
         return;
+      }
+
+      let currentUrl = await getHostedCurrentUrl(tabId);
+      if (isPayPalUrl(currentUrl)) {
+        await addHostedStepLog(stepKey, `步骤 ${stepNumber}：当前已在 PayPal 页面，OpenAI Checkout 节点直接完成。`, 'info');
+        await completeHostedStep(stepKey, tabId, {
+          plusCheckoutSource: PLUS_PAYMENT_METHOD_PAYPAL_HOSTED,
+        });
+        return;
+      }
+      if (!isHostedOpenAiCheckoutUrl(currentUrl)) {
+        currentUrl = await waitForHostedUrlAfterAction(
+          tabId,
+          (url) => isHostedOpenAiCheckoutUrl(url) || isPayPalUrl(url) || isHostedCheckoutSuccessUrl(url),
+          { label: `步骤 ${stepNumber}：等待 OpenAI hosted checkout 页面` }
+        );
+      }
+      if (isHostedCheckoutSuccessUrl(currentUrl)) {
+        await completeHostedStep(stepKey, tabId, {
+          plusReturnUrl: currentUrl,
+          plusHostedCheckoutCompleted: true,
+        });
+        return;
+      }
+      if (isPayPalUrl(currentUrl)) {
+        await completeHostedStep(stepKey, tabId, {
+          plusCheckoutSource: PLUS_PAYMENT_METHOD_PAYPAL_HOSTED,
+        });
+        return;
+      }
+
+      const { profile, config } = await ensureHostedGuestProfile(state);
+      await addHostedStepLog(stepKey, `步骤 ${stepNumber}：正在选择 PayPal 并提交 OpenAI hosted checkout（电话使用本地号码 ${profile.phone}）。`, 'info');
+      const transitionUrl = await runHostedOpenAiCheckout(tabId, profile, config);
+      const completedUrl = String(transitionUrl || await getHostedCurrentUrl(tabId) || '').trim();
+      await completeHostedStep(stepKey, tabId, {
+        plusCheckoutSource: PLUS_PAYMENT_METHOD_PAYPAL_HOSTED,
+        plusCheckoutUrl: completedUrl,
+        plusReturnUrl: isHostedCheckoutSuccessUrl(completedUrl) ? completedUrl : '',
+        plusHostedCheckoutCompleted: isHostedCheckoutSuccessUrl(completedUrl),
+      });
+    }
+
+    async function executePayPalHostedEmail(state = {}) {
+      const stepKey = PAYPAL_HOSTED_STEP_EMAIL;
+      const stepNumber = getHostedStepNumber(stepKey);
+      const tabId = await resolveHostedCheckoutTabId(state, stepKey);
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state)) {
+        return;
+      }
+      const { profile } = await ensureHostedGuestProfile(state);
+      await waitForHostedUrlAfterAction(
+        tabId,
+        (url) => isPayPalUrl(url) || isHostedCheckoutSuccessUrl(url),
+        { label: `步骤 ${stepNumber}：等待 PayPal 邮箱页` }
+      );
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state)) {
+        return;
+      }
+
+      const pageState = await getHostedPayPalState(tabId);
+      if (isHostedStageAtOrAfter(pageState.hostedStage, PAYPAL_HOSTED_STAGE_VERIFICATION)
+        && pageState.hostedStage !== PAYPAL_HOSTED_STAGE_LOGIN) {
+        await addHostedStepLog(stepKey, `步骤 ${stepNumber}：当前 PayPal 已进入后续页面（${pageState.hostedStage}），邮箱节点直接完成。`, 'info');
+        await completeHostedStep(stepKey, tabId, {
+          plusHostedCheckoutLastStage: pageState.hostedStage,
+        });
+        return;
+      }
+      if (pageState.hostedStage !== PAYPAL_HOSTED_STAGE_LOGIN) {
+        throw new Error(`步骤 ${stepNumber}：当前不是 PayPal 邮箱页（当前状态：${pageState.hostedStage || PAYPAL_HOSTED_STAGE_UNKNOWN}）。`);
+      }
+
+      await addHostedStepLog(stepKey, `步骤 ${stepNumber}：正在填写 PayPal 无卡直绑邮箱。`, 'info');
+      await runHostedPayPalStep(tabId, {
+        expectedStage: PAYPAL_HOSTED_STAGE_LOGIN,
+        email: profile.email,
+      });
+      const nextState = await waitForHostedPayPalStage(
+        tabId,
+        (stateInfo) => stateInfo?.hostedStage && stateInfo.hostedStage !== PAYPAL_HOSTED_STAGE_LOGIN,
+        { label: `步骤 ${stepNumber}：等待 PayPal 邮箱页跳转` }
+      );
+      await completeHostedStep(stepKey, tabId, {
+        plusHostedCheckoutLastStage: nextState.hostedStage || '',
+      });
+    }
+
+    async function executePayPalHostedVerification(state = {}) {
+      const stepKey = PAYPAL_HOSTED_STEP_VERIFICATION;
+      const stepNumber = getHostedStepNumber(stepKey);
+      const tabId = await resolveHostedCheckoutTabId(state, stepKey);
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state)) {
+        return;
+      }
+      await waitForHostedUrlAfterAction(
+        tabId,
+        (url) => isPayPalUrl(url) || isHostedCheckoutSuccessUrl(url),
+        { label: `步骤 ${stepNumber}：等待 PayPal 验证码页` }
+      );
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state)) {
+        return;
+      }
+
+      const pageState = await getHostedPayPalState(tabId);
+      if (isHostedStageAtOrAfter(pageState.hostedStage, PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT)
+        && pageState.hostedStage !== PAYPAL_HOSTED_STAGE_VERIFICATION) {
+        await addHostedStepLog(stepKey, `步骤 ${stepNumber}：当前 PayPal 已进入后续页面（${pageState.hostedStage}），验证码节点直接完成。`, 'info');
+        await completeHostedStep(stepKey, tabId, {
+          plusHostedCheckoutLastStage: pageState.hostedStage,
+        });
+        return;
+      }
+      if (pageState.hostedStage !== PAYPAL_HOSTED_STAGE_VERIFICATION) {
+        throw new Error(`步骤 ${stepNumber}：当前不是 PayPal 验证码页（当前状态：${pageState.hostedStage || PAYPAL_HOSTED_STAGE_UNKNOWN}）。`);
       }
 
       const config = await getHostedCheckoutRuntimeConfig(state);
-      const address = await fetchHostedCheckoutAddress();
-      const guestProfile = buildHostedGuestProfile(address, config);
-      let transitionUrl = landedUrl;
+      const verificationCode = await pollHostedVerificationCode(config.verificationUrl);
+      await addHostedStepLog(stepKey, `步骤 ${stepNumber}：正在填写 PayPal 无卡直绑验证码。`, 'info');
+      await runHostedPayPalStep(tabId, {
+        expectedStage: PAYPAL_HOSTED_STAGE_VERIFICATION,
+        verificationCode,
+      });
+      const nextState = await waitForHostedPayPalStage(
+        tabId,
+        (stateInfo) => stateInfo?.hostedStage && stateInfo.hostedStage !== PAYPAL_HOSTED_STAGE_VERIFICATION,
+        { label: `步骤 ${stepNumber}：等待 PayPal 验证码页跳转` }
+      );
+      await completeHostedStep(stepKey, tabId, {
+        plusHostedCheckoutLastStage: nextState.hostedStage || '',
+      });
+    }
 
-      if (isHostedOpenAiCheckoutUrl(transitionUrl)) {
-        transitionUrl = await runHostedOpenAiCheckout(tabId, guestProfile, config);
+    async function executePayPalHostedCard(state = {}) {
+      const stepKey = PAYPAL_HOSTED_STEP_CARD;
+      const stepNumber = getHostedStepNumber(stepKey);
+      const tabId = await resolveHostedCheckoutTabId(state, stepKey);
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state)) {
+        return;
       }
-
-      if (isHostedCheckoutSuccessUrl(transitionUrl)) {
-        await waitHostedSuccessDelayAndComplete(tabId, state, transitionUrl);
+      await waitForHostedUrlAfterAction(
+        tabId,
+        (url) => isPayPalUrl(url) || isHostedCheckoutSuccessUrl(url),
+        { label: `步骤 ${stepNumber}：等待 PayPal 资料页` }
+      );
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state)) {
         return;
       }
 
-      if (!isPayPalUrl(transitionUrl)) {
-        const transitionTab = await waitForUrlMatch(
-          tabId,
-          (url) => isPayPalUrl(url) || isHostedCheckoutSuccessUrl(url),
-          HOSTED_CHECKOUT_TRANSITION_TIMEOUT_MS,
-          500
+      const pageState = await getHostedPayPalState(tabId);
+      if (isHostedStageAtOrAfter(pageState.hostedStage, PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT)
+        && pageState.hostedStage !== PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT) {
+        await addHostedStepLog(stepKey, `步骤 ${stepNumber}：当前 PayPal 已进入后续页面（${pageState.hostedStage}），资料节点直接完成。`, 'info');
+        await completeHostedStep(stepKey, tabId, {
+          plusHostedCheckoutLastStage: pageState.hostedStage,
+        });
+        return;
+      }
+      if (pageState.hostedStage !== PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT) {
+        throw new Error(`步骤 ${stepNumber}：当前不是 PayPal 资料页（当前状态：${pageState.hostedStage || PAYPAL_HOSTED_STAGE_UNKNOWN}）。`);
+      }
+
+      const { profile } = await ensureHostedGuestProfile(state);
+      await addHostedStepLog(stepKey, `步骤 ${stepNumber}：正在填写 PayPal 无卡直绑资料，提交前会复查电话是否为 ${profile.phone}。`, 'info');
+      const cardResult = await runHostedPayPalStep(tabId, {
+        ...profile,
+        expectedStage: PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT,
+        phone: profile.phone,
+      });
+      if (cardResult?.phoneMatched) {
+        await addHostedStepLog(
+          stepKey,
+          `步骤 ${stepNumber}：PayPal 页面电话复查通过（配置 ${cardResult.payloadPhoneDigits}，页面 ${cardResult.renderedPhoneDigits}）。`,
+          'info'
         );
-        transitionUrl = String(transitionTab?.url || '').trim();
       }
+      const nextState = await waitForHostedPayPalStage(
+        tabId,
+        (stateInfo) => stateInfo?.hostedStage && stateInfo.hostedStage !== PAYPAL_HOSTED_STAGE_GUEST_CHECKOUT,
+        { label: `步骤 ${stepNumber}：等待 PayPal 资料页跳转` }
+      );
+      await completeHostedStep(stepKey, tabId, {
+        plusHostedCheckoutLastStage: nextState.hostedStage || '',
+      });
+    }
 
-      if (isHostedCheckoutSuccessUrl(transitionUrl)) {
-        await waitHostedSuccessDelayAndComplete(tabId, state, transitionUrl);
+    async function executePayPalHostedCreateAccount(state = {}) {
+      const stepKey = PAYPAL_HOSTED_STEP_CREATE_ACCOUNT;
+      const stepNumber = getHostedStepNumber(stepKey);
+      const tabId = await resolveHostedCheckoutTabId(state, stepKey);
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state)) {
         return;
       }
-      if (!isPayPalUrl(transitionUrl)) {
-        throw new Error('步骤 6：PayPal 无卡直绑提交后未进入 PayPal 或支付成功页。');
+      await waitForHostedUrlAfterAction(
+        tabId,
+        (url) => isPayPalUrl(url) || isHostedCheckoutSuccessUrl(url),
+        { label: `步骤 ${stepNumber}：等待 PayPal 创建确认页` }
+      );
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state)) {
+        return;
       }
 
-      const successUrl = await runHostedPayPalCheckout(tabId, guestProfile, config);
-      await waitHostedSuccessDelayAndComplete(tabId, state, successUrl);
+      const pageState = await getHostedPayPalState(tabId);
+      if (isHostedStageAtOrAfter(pageState.hostedStage, PAYPAL_HOSTED_STAGE_REVIEW)
+        && pageState.hostedStage !== PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT) {
+        await addHostedStepLog(stepKey, `步骤 ${stepNumber}：当前 PayPal 已进入后续页面（${pageState.hostedStage}），创建确认节点直接完成。`, 'info');
+        await completeHostedStep(stepKey, tabId, {
+          plusHostedCheckoutLastStage: pageState.hostedStage,
+        });
+        return;
+      }
+      if (pageState.hostedStage !== PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT) {
+        throw new Error(`步骤 ${stepNumber}：当前不是 PayPal 创建确认页（当前状态：${pageState.hostedStage || PAYPAL_HOSTED_STAGE_UNKNOWN}）。`);
+      }
+
+      await addHostedStepLog(stepKey, `步骤 ${stepNumber}：正在确认创建 PayPal 账号。`, 'info');
+      await runHostedPayPalStep(tabId, {
+        expectedStage: PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT,
+      });
+      const nextState = await waitForHostedPayPalStage(
+        tabId,
+        (stateInfo) => stateInfo?.hostedStage && stateInfo.hostedStage !== PAYPAL_HOSTED_STAGE_CREATE_ACCOUNT,
+        { label: `步骤 ${stepNumber}：等待 PayPal 创建确认页跳转` }
+      );
+      await completeHostedStep(stepKey, tabId, {
+        plusHostedCheckoutLastStage: nextState.hostedStage || '',
+      });
+    }
+
+    async function executePayPalHostedReview(state = {}) {
+      const stepKey = PAYPAL_HOSTED_STEP_REVIEW;
+      const stepNumber = getHostedStepNumber(stepKey);
+      const tabId = await resolveHostedCheckoutTabId(state, stepKey);
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state, { waitBeforeComplete: true })) {
+        return;
+      }
+      await waitForHostedUrlAfterAction(
+        tabId,
+        (url) => isPayPalUrl(url) || isHostedCheckoutSuccessUrl(url),
+        { label: `步骤 ${stepNumber}：等待 PayPal 授权复核页` }
+      );
+      if (await completeHostedStepIfSuccessful(stepKey, tabId, state, { waitBeforeComplete: true })) {
+        return;
+      }
+
+      const pageState = await getHostedPayPalState(tabId);
+      if (pageState.hostedStage !== PAYPAL_HOSTED_STAGE_REVIEW) {
+        throw new Error(`步骤 ${stepNumber}：当前不是 PayPal 授权复核页（当前状态：${pageState.hostedStage || PAYPAL_HOSTED_STAGE_UNKNOWN}）。`);
+      }
+
+      await addHostedStepLog(stepKey, `步骤 ${stepNumber}：正在确认 PayPal 授权复核页。`, 'info');
+      await runHostedPayPalStep(tabId, {
+        expectedStage: PAYPAL_HOSTED_STAGE_REVIEW,
+      });
+      await waitForHostedUrlAfterAction(
+        tabId,
+        (url) => isHostedCheckoutSuccessUrl(url),
+        { label: `步骤 ${stepNumber}：等待 PayPal 回到 ChatGPT 支付成功页`, timeoutMs: HOSTED_CHECKOUT_PAYPAL_TIMEOUT_MS }
+      );
+      if (!await completeHostedStepIfSuccessful(stepKey, tabId, state, { waitBeforeComplete: true })) {
+        throw new Error(`步骤 ${stepNumber}：PayPal 授权后未检测到 ChatGPT 支付成功页。`);
+      }
     }
 
     function normalizeHelperCountryCode(countryCode = '86') {
@@ -990,6 +1446,12 @@
 
     return {
       executePlusCheckoutCreate,
+      executePayPalHostedOpenAiCheckout,
+      executePayPalHostedEmail,
+      executePayPalHostedVerification,
+      executePayPalHostedCard,
+      executePayPalHostedCreateAccount,
+      executePayPalHostedReview,
     };
   }
 
