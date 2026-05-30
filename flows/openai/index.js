@@ -317,21 +317,6 @@
         }
       ]
     },
-    "gopay-flow": {
-      "flowId": "openai",
-      "kind": "flow-page",
-      "label": "GoPay 授权页",
-      "readyPolicy": "allow-child-frame",
-      "family": "gopay-flow-family",
-      "driverId": "flows/openai/content/gopay-flow",
-      "cleanupScopes": [],
-      "familyMatchers": [
-        {
-          "hostnameRegex": "gopay|gojek",
-          "hostnameRegexFlags": "i"
-        }
-      ]
-    }
   },
   "driverDefinitions": {
     "flows/openai/content/openai-auth": {
@@ -389,12 +374,6 @@
         "paypal-hosted-card",
         "paypal-hosted-create-account",
         "paypal-hosted-review"
-      ]
-    },
-    "flows/openai/content/gopay-flow": {
-      "sourceId": "gopay-flow",
-      "commands": [
-        "gopay-subscription-confirm"
       ]
     },
     "flows/openai/background/publisher-webchat": {

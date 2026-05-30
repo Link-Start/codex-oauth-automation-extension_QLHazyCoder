@@ -848,7 +848,7 @@ test('auto-run treats GPC account binding as recoverable step 6 restart', async 
     startStep: 6,
     failureStep: 7,
     failureBudget: 1,
-    failureMessage: 'GPC_PAGE_FLOW_ENDED::GOPAY已经绑了订阅，需要手动解绑',
+    failureMessage: 'GPC_PAGE_FLOW_ENDED::账号已经绑定订阅，需要手动解绑',
     stepDefinitions: plusGpcSteps,
     finalOAuthChainStartStep: 10,
     customState: {

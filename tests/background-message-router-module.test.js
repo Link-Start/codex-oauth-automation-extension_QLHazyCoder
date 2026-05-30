@@ -320,12 +320,6 @@ test('SAVE_SETTING rebuilds Plus node statuses when the account access strategy 
     sub2apiProxyId: 'proxy-id',
     codex2apiSessionId: 'codex-session',
     codex2apiOAuthState: 'codex-oauth-state',
-    plusManualConfirmationPending: true,
-    plusManualConfirmationRequestId: 'gopay-req',
-    plusManualConfirmationStep: 9,
-    plusManualConfirmationMethod: 'gopay',
-    plusManualConfirmationTitle: 'GoPay 订阅确认',
-    plusManualConfirmationMessage: '完成后继续 OAuth 登录。',
     currentNodeId: 'confirm-oauth',
     nodeStatuses: {
       'open-chatgpt': 'completed',
@@ -403,12 +397,6 @@ test('SAVE_SETTING rebuilds Plus node statuses when the account access strategy 
   assert.equal(state.sub2apiProxyId, null);
   assert.equal(state.codex2apiSessionId, null);
   assert.equal(state.codex2apiOAuthState, null);
-  assert.equal(state.plusManualConfirmationPending, false);
-  assert.equal(state.plusManualConfirmationRequestId, '');
-  assert.equal(state.plusManualConfirmationStep, 0);
-  assert.equal(state.plusManualConfirmationMethod, '');
-  assert.equal(state.plusManualConfirmationTitle, '');
-  assert.equal(state.plusManualConfirmationMessage, '');
   assert.deepStrictEqual(state.nodeStatuses, {
     'open-chatgpt': 'pending',
     'plus-checkout-create': 'pending',
@@ -435,12 +423,6 @@ test('SAVE_SETTING rebuilds Plus node statuses when the account access strategy 
     sub2apiProxyId: null,
     codex2apiSessionId: null,
     codex2apiOAuthState: null,
-    plusManualConfirmationPending: false,
-    plusManualConfirmationRequestId: '',
-    plusManualConfirmationStep: 0,
-    plusManualConfirmationMethod: '',
-    plusManualConfirmationTitle: '',
-    plusManualConfirmationMessage: '',
     nodeStatuses: {
       'open-chatgpt': 'pending',
       'plus-checkout-create': 'pending',
@@ -466,12 +448,6 @@ test('SAVE_SETTING rebuilds Plus node statuses when panel mode forces the effect
     oauthUrl: 'https://oauth.example/current',
     localhostUrl: 'http://localhost:38080/callback',
     sub2apiSessionId: 'sub-session',
-    plusManualConfirmationPending: true,
-    plusManualConfirmationRequestId: 'gopay-req',
-    plusManualConfirmationStep: 9,
-    plusManualConfirmationMethod: 'gopay',
-    plusManualConfirmationTitle: 'GoPay 订阅确认',
-    plusManualConfirmationMessage: '完成后继续导入当前 ChatGPT 会话到 SUB2API。',
     currentNodeId: 'sub2api-session-import',
     nodeStatuses: {
       'open-chatgpt': 'completed',
@@ -536,8 +512,6 @@ test('SAVE_SETTING rebuilds Plus node statuses when panel mode forces the effect
   assert.equal(state.oauthUrl, null);
   assert.equal(state.localhostUrl, null);
   assert.equal(state.sub2apiSessionId, null);
-  assert.equal(state.plusManualConfirmationPending, false);
-  assert.equal(state.plusManualConfirmationMessage, '');
   assert.deepStrictEqual(state.nodeStatuses, {
     'open-chatgpt': 'pending',
     'plus-checkout-create': 'pending',
@@ -568,12 +542,6 @@ test('SAVE_SETTING rebuilds Plus node statuses when panel mode forces the effect
     sub2apiProxyId: null,
     codex2apiSessionId: null,
     codex2apiOAuthState: null,
-    plusManualConfirmationPending: false,
-    plusManualConfirmationRequestId: '',
-    plusManualConfirmationStep: 0,
-    plusManualConfirmationMethod: '',
-    plusManualConfirmationTitle: '',
-    plusManualConfirmationMessage: '',
     nodeStatuses: {
       'open-chatgpt': 'pending',
       'plus-checkout-create': 'pending',

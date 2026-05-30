@@ -370,9 +370,6 @@
             <option value="none">无需支付</option>
             <option value="paypal-hosted">PayPal 无卡直绑</option>
             <option value="paypal">PayPal</option>
-            <!--
-            <option value="gopay">GoPay</option>
-            -->
             <option value="gpc-helper">GPC</option>
           </select>
           <button id="btn-gpc-card-key-purchase" class="btn btn-outline btn-sm data-inline-btn" type="button" style="display:none;">购买卡密</button>
@@ -424,44 +421,6 @@
           </div>
           <button id="btn-gpc-card-key-query" class="btn btn-outline btn-sm data-inline-btn" type="button">查询</button>
           <span id="display-gpc-card-key-status" class="data-value mono">等待输入</span>
-        </div>
-      </div>
-      <div class="data-row" id="row-gopay-country-code" style="display:none;">
-        <span class="data-label">GoPay 区号</span>
-        <select id="select-gopay-country-code" class="data-select">
-          <option value="+86">中国 +86</option>
-          <option value="+62">印度尼西亚 +62</option>
-          <option value="+1">美国/加拿大 +1</option>
-          <option value="+852">香港 +852</option>
-          <option value="+853">澳门 +853</option>
-          <option value="+886">台湾 +886</option>
-          <option value="+60">马来西亚 +60</option>
-          <option value="+65">新加坡 +65</option>
-          <option value="+66">泰国 +66</option>
-          <option value="+84">越南 +84</option>
-          <option value="+63">菲律宾 +63</option>
-          <option value="+91">印度 +91</option>
-        </select>
-      </div>
-      <div class="data-row" id="row-gopay-phone" style="display:none;">
-        <span class="data-label">GoPay 手机</span>
-        <input type="text" id="input-gopay-phone" class="data-input"
-          placeholder="请输入不含区号的 GoPay / WhatsApp 手机号" autocomplete="tel" />
-      </div>
-      <div class="data-row" id="row-gopay-otp" style="display:none;">
-        <span class="data-label">GoPay 验证码</span>
-        <input type="text" id="input-gopay-otp" class="data-input"
-          placeholder="可选；留空时执行中会弹窗手动输入" inputmode="numeric" autocomplete="one-time-code" />
-      </div>
-      <div class="data-row" id="row-gopay-pin" style="display:none;">
-        <span class="data-label">GoPay PIN</span>
-        <div class="input-with-icon">
-          <input type="password" id="input-gopay-pin" class="data-input data-input-with-icon"
-            placeholder="请输入 GoPay PIN" autocomplete="off" />
-          <button id="btn-toggle-gopay-pin" class="input-icon-btn" type="button"
-            data-password-toggle="input-gopay-pin" data-show-label="显示 GoPay PIN"
-            data-hide-label="隐藏 GoPay PIN" aria-label="显示 GoPay PIN"
-            title="显示 GoPay PIN"></button>
         </div>
       </div>
       <div class="data-row module-divider-start" id="row-mail-provider">
@@ -1925,7 +1884,7 @@
   <script src="../managed-alias-utils.js"></script>
   <script src="../mail2925-utils.js"></script>
   <script src="../paypal-utils.js"></script>
-  <script src="../gopay-utils.js"></script>
+  <script src="../gpc-utils.js"></script>
   <script src="../phone-sms/providers/hero-sms.js"></script>
   <script src="../phone-sms/providers/five-sim.js"></script>
   <script src="../phone-sms/providers/nexsms.js"></script>

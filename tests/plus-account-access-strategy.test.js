@@ -53,7 +53,6 @@ function extractFunction(name) {
 function buildHarness(capabilityStateSource, stateSource) {
   return new Function(`
 const PLUS_PAYMENT_METHOD_PAYPAL = 'paypal';
-const PLUS_PAYMENT_METHOD_GOPAY = 'gopay';
 const PLUS_PAYMENT_METHOD_GPC_HELPER = 'gpc-helper';
 const DEFAULT_PLUS_PAYMENT_METHOD = 'paypal';
 const PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH = 'oauth';
@@ -65,7 +64,7 @@ ${extractFunction('getRequestedPlusAccountAccessStrategy')}
 ${extractFunction('updatePlusModeUI')}
 function normalizePlusPaymentMethod(value = '') {
   const normalized = String(value || '').trim().toLowerCase();
-  return normalized === 'gopay' || normalized === 'gpc-helper' ? normalized : 'paypal';
+  return normalized === 'gpc-helper' ? normalized : 'paypal';
 }
 function getSelectedPlusPaymentMethod() {
   return normalizePlusPaymentMethod(selectPlusPaymentMethod.value || latestState?.plusPaymentMethod || currentPlusPaymentMethod || 'paypal');

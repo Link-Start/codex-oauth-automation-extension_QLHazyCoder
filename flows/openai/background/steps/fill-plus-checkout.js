@@ -8,7 +8,6 @@
   const PLUS_CHECKOUT_SUBMIT_MAX_ATTEMPTS = 5;
   const PLUS_CHECKOUT_PAYPAL_REDIRECT_TIMEOUT_MS = 10000;
   const PLUS_PAYMENT_METHOD_PAYPAL = 'paypal';
-  const PLUS_PAYMENT_METHOD_GOPAY = 'gopay';
   const PLUS_PAYMENT_METHOD_GPC_HELPER = 'gpc-helper';
   const GPC_PORTAL_URL = 'https://gpc.qlhazycoder.top/';
   const GPC_PAGE_POLL_INTERVAL_MS = 3000;
@@ -20,12 +19,6 @@
       label: 'PayPal',
       selectMessageType: 'PLUS_CHECKOUT_SELECT_PAYPAL',
       redirectPattern: /paypal\./i,
-    },
-    [PLUS_PAYMENT_METHOD_GOPAY]: {
-      id: PLUS_PAYMENT_METHOD_GOPAY,
-      label: 'GoPay',
-      selectMessageType: 'PLUS_CHECKOUT_SELECT_GOPAY',
-      redirectPattern: /gopay|gojek|midtrans|xendit|stripe|checkout/i,
     },
   };
   const MEIGUODIZHI_ADDRESS_ENDPOINT = 'https://www.meiguodizhi.com/api/v1/dz';
@@ -117,14 +110,14 @@
 
     function normalizePlusPaymentMethod(value = '') {
       const rootScope = typeof self !== 'undefined' ? self : globalThis;
-      if (rootScope.GoPayUtils?.normalizePlusPaymentMethod) {
-        return rootScope.GoPayUtils.normalizePlusPaymentMethod(value);
+      if (rootScope.GpcUtils?.normalizePlusPaymentMethod) {
+        return rootScope.GpcUtils.normalizePlusPaymentMethod(value);
       }
       const normalized = String(value || '').trim().toLowerCase();
       if (normalized === PLUS_PAYMENT_METHOD_GPC_HELPER) {
         return PLUS_PAYMENT_METHOD_GPC_HELPER;
       }
-      return normalized === PLUS_PAYMENT_METHOD_GOPAY ? PLUS_PAYMENT_METHOD_GOPAY : PLUS_PAYMENT_METHOD_PAYPAL;
+      return PLUS_PAYMENT_METHOD_PAYPAL;
     }
 
     function getPaymentMethodConfig(method = PLUS_PAYMENT_METHOD_PAYPAL) {
@@ -724,18 +717,6 @@
         || ''
       );
 
-      if (normalizedPaymentMethod === PLUS_PAYMENT_METHOD_GOPAY) {
-        const countryCode = exitCountry || checkoutCountry || savedCheckoutCountry || 'ID';
-        return {
-          countryCode,
-          requestedCountry: exitCountry
-            || normalizeText(countryOverride)
-            || normalizeText(state.plusCheckoutCountry)
-            || 'ID',
-          source: exitCountry ? 'proxy_exit' : (checkoutCountry ? 'checkout_page' : (savedCheckoutCountry ? 'checkout_state' : 'gopay_fallback')),
-        };
-      }
-
       const countryCode = checkoutCountry || savedCheckoutCountry || exitCountry || 'DE';
       return {
         countryCode,
@@ -752,9 +733,6 @@
       const countryResolution = resolveBillingAddressCountry(state, countryOverride, paymentMethod);
       const countryCode = countryResolution.countryCode;
       const requestedCountry = countryResolution.requestedCountry;
-      if (paymentMethod === PLUS_PAYMENT_METHOD_GOPAY && countryResolution.source === 'proxy_exit') {
-        await addLog(`步骤 7：GoPay 账单地址将按当前代理出口地区 ${countryCode} 填写。`, 'info');
-      }
       const localSeed = getLocalAddressSeed(countryCode);
       const lookupSeed = localSeed || buildMeiguodizhiLookupSeed(countryCode);
       if (!lookupSeed) {
@@ -943,7 +921,7 @@
         .map((item) => {
           const flags = [];
           if (item.result?.hasPayPal) flags.push('paypal');
-          if (item.result?.hasGoPay) flags.push('gopay');
+
           if (item.result?.billingFieldsVisible) flags.push('billing');
           if (item.result?.hasSubscribeButton) flags.push('subscribe');
           if (!flags.length && item.error) flags.push(item.error);
@@ -964,12 +942,6 @@
     }
 
     function pickPaymentFrame(inspections, paymentMethod = PLUS_PAYMENT_METHOD_PAYPAL) {
-      const normalizedPaymentMethod = normalizePlusPaymentMethod(paymentMethod);
-      if (normalizedPaymentMethod === PLUS_PAYMENT_METHOD_GOPAY) {
-        return inspections.find((item) => item.result?.hasGoPay || item.result?.gopayCandidates?.length)
-          || inspections.find((item) => isPaymentFrameUrl(item.frame.url))
-          || null;
-      }
       return inspections.find((item) => item.result?.hasPayPal || item.result?.paypalCandidates?.length)
         || inspections.find((item) => isPaymentFrameUrl(item.frame.url))
         || null;
@@ -1170,67 +1142,7 @@
         await addLog(`步骤 7：账单地址位于 checkout iframe（frameId=${billingFrame.frameId}），将改为在该 frame 内填写。`, 'info');
       }
 
-      let billingState = state;
-      if (paymentMethod === PLUS_PAYMENT_METHOD_GOPAY && typeof probeIpProxyExit === 'function') {
-        const staleExitRegion = normalizeText(
-          state?.ipProxyAppliedExitRegion
-          || state?.ipProxyExitRegion
-          || ''
-        );
-        try {
-          await addLog('步骤 7：GoPay 账单地址准备按代理出口填写，正在重新检测当前出口地区...', 'info');
-          const probeResult = await probeIpProxyExit({
-            state,
-            timeoutMs: 12000,
-            authRebindRetry: true,
-            detectWhenDisabled: true,
-          });
-          const routing = probeResult?.proxyRouting || {};
-          const probedExitRegion = normalizeText(routing.exitRegion || '');
-          const probedExitIp = normalizeText(routing.exitIp || '');
-          const probedExitSource = normalizeText(routing.exitSource || '');
-          const probeEndpoint = normalizeText(routing.endpoint || routing.exitEndpoint || '');
-          const probeReason = normalizeText(routing.reason || '');
-          const probeError = normalizeText(routing.exitError || routing.error || '');
-          if (probedExitRegion) {
-            billingState = {
-              ...(state || {}),
-              ipProxyAppliedExitRegion: probedExitRegion,
-              ipProxyExitRegion: probedExitRegion,
-              ipProxyAppliedExitIp: probedExitIp,
-              ipProxyAppliedExitSource: probedExitSource,
-            };
-            const sourceSuffix = probedExitSource ? `，来源 ${probedExitSource}` : '';
-            const endpointSuffix = probeEndpoint ? `，检测地址 ${probeEndpoint}` : '';
-            await addLog(`步骤 7：当前代理出口复测结果：${probedExitRegion}${probedExitIp ? ` / ${probedExitIp}` : ''}${sourceSuffix}${endpointSuffix}。`, 'info');
-          } else {
-            billingState = {
-              ...(state || {}),
-              ipProxyAppliedExitRegion: '',
-              ipProxyExitRegion: '',
-              ipProxyAppliedExitIp: probedExitIp,
-              ipProxyAppliedExitSource: probedExitSource,
-            };
-            await addLog(
-              `步骤 7：代理出口复测没有返回国家/地区代码，已清空旧出口地区${staleExitRegion ? ` ${staleExitRegion}` : ''}，不会继续沿用旧地区。${probeReason ? `状态：${probeReason}。` : ''}${probeError ? `诊断：${probeError}` : ''}`,
-              'warn'
-            );
-          }
-        } catch (error) {
-          billingState = {
-            ...(state || {}),
-            ipProxyAppliedExitRegion: '',
-            ipProxyExitRegion: '',
-          };
-          await addLog(`步骤 7：代理出口复测失败，已清空旧出口地区${staleExitRegion ? ` ${staleExitRegion}` : ''}，不会继续沿用旧地区：${error?.message || String(error || '未知错误')}`, 'warn');
-        }
-      }
-      if (paymentMethod === PLUS_PAYMENT_METHOD_GOPAY
-        && typeof probeIpProxyExit === 'function'
-        && !resolveMeiguodizhiCountryCode(billingState?.ipProxyAppliedExitRegion || billingState?.ipProxyExitRegion || '')) {
-        throw new Error('步骤 7：GoPay 账单地址需要当前代理出口国家/地区，但本次复测没有拿到国家码；已停止填写，避免误用旧的 KR/ID 地区。请先点 IP 代理“检测出口”，确认显示 JP 后再继续。');
-      }
-      const addressSeed = await resolveBillingAddressSeed(billingState, billingFrame.countryText, { paymentMethod });
+      const addressSeed = await resolveBillingAddressSeed(state, billingFrame.countryText, { paymentMethod });
       if (!addressSeed) {
         throw new Error('步骤 7：未找到可用的本地账单地址种子。');
       }

@@ -155,7 +155,7 @@ function normalizeSignupMethod(value = '') {
 }
 function normalizePlusPaymentMethod(value = '') {
   const normalized = String(value || '').trim().toLowerCase();
-  return normalized === 'gopay' || normalized === 'gpc-helper' ? normalized : 'paypal';
+  return normalized === 'gpc-helper' ? normalized : 'paypal';
 }
 ${extractFunction('normalizePlusAccountAccessStrategy')}
 function normalizeSub2ApiGroupNames(value) {

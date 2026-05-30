@@ -669,7 +669,7 @@
       if (normalized === 'gpc-helper') {
         return 'gpc-helper';
       }
-      return normalized === 'gopay' ? 'gopay' : 'paypal';
+      return 'paypal';
     }
 
     function getPlusPaymentMethodLabel(value = '') {
@@ -683,7 +683,7 @@
       if (method === 'gpc-helper') {
         return 'GPC';
       }
-      return method === 'gopay' ? 'GoPay' : 'PayPal';
+      return 'PayPal';
     }
 
     function normalizePlusAccountAccessStrategyForDisplay(value = '') {
@@ -1173,59 +1173,6 @@
           return { ok: true };
         }
 
-        case 'RESOLVE_PLUS_MANUAL_CONFIRMATION': {
-          const currentState = await getState();
-          const step = Number(message.payload?.step) || Number(currentState?.plusManualConfirmationStep) || 0;
-          const confirmationNodeId = getStepKeyForState(step, currentState) || String(currentState?.currentNodeId || '').trim();
-          const confirmed = Boolean(message.payload?.confirmed);
-          const requestId = String(message.payload?.requestId || '').trim();
-          const currentRequestId = String(currentState?.plusManualConfirmationRequestId || '').trim();
-          const method = String(currentState?.plusManualConfirmationMethod || '').trim().toLowerCase();
-          if (!currentState?.plusManualConfirmationPending) {
-            return { ok: true, ignored: true };
-          }
-          if (requestId && currentRequestId && requestId !== currentRequestId) {
-            return { ok: true, ignored: true };
-          }
-
-          const clearManualConfirmationState = {
-            plusManualConfirmationPending: false,
-            plusManualConfirmationRequestId: '',
-            plusManualConfirmationStep: 0,
-            plusManualConfirmationMethod: '',
-            plusManualConfirmationTitle: '',
-            plusManualConfirmationMessage: '',
-          };
-
-          await setState(clearManualConfirmationState);
-          if (typeof broadcastDataUpdate === 'function') {
-            broadcastDataUpdate(clearManualConfirmationState);
-          }
-
-          if (confirmed) {
-            const methodLabel = method === 'gopay' ? 'GoPay' : '手动';
-            await addLog(`步骤 ${step}：已确认${methodLabel}订阅完成，准备继续下一步。`, 'ok');
-            await completeNodeFromBackground(confirmationNodeId, {
-              plusManualConfirmationMethod: currentState?.plusManualConfirmationMethod || '',
-              plusManualConfirmedAt: Date.now(),
-            });
-            return { ok: true };
-          }
-
-          const cancelMessage = method === 'gopay'
-            ? '已取消 GoPay 订阅确认'
-            : '已取消当前手动确认';
-          await setNodeStatus(confirmationNodeId, 'failed');
-          await addLog(`步骤 ${step}：${cancelMessage}。`, 'warn');
-          await appendManualAccountRunRecordIfNeeded(
-            confirmationNodeId ? `node:${confirmationNodeId}:failed` : 'failed',
-            null,
-            cancelMessage
-          );
-          notifyNodeError(confirmationNodeId, cancelMessage);
-          return { ok: true };
-        }
-
         case 'GET_STATE': {
           return await getState();
         }
@@ -1567,12 +1514,6 @@
               sub2apiProxyId: null,
               codex2apiSessionId: null,
               codex2apiOAuthState: null,
-              plusManualConfirmationPending: false,
-              plusManualConfirmationRequestId: '',
-              plusManualConfirmationStep: 0,
-              plusManualConfirmationMethod: '',
-              plusManualConfirmationTitle: '',
-              plusManualConfirmationMessage: '',
             });
           }
           if (shouldRebuildNodeStatuses && nextNodeIds.length > 0) {

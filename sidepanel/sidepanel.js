@@ -240,14 +240,6 @@ const rowGpcCardKey = document.getElementById('row-gpc-card-key');
 const inputGpcCardKey = document.getElementById('input-gpc-card-key');
 const displayGpcCardKeyStatus = document.getElementById('display-gpc-card-key-status');
 const btnGpcCardKeyQuery = document.getElementById('btn-gpc-card-key-query');
-const rowGoPayCountryCode = document.getElementById('row-gopay-country-code');
-const selectGoPayCountryCode = document.getElementById('select-gopay-country-code');
-const rowGoPayPhone = document.getElementById('row-gopay-phone');
-const inputGoPayPhone = document.getElementById('input-gopay-phone');
-const rowGoPayOtp = document.getElementById('row-gopay-otp');
-const inputGoPayOtp = document.getElementById('input-gopay-otp');
-const rowGoPayPin = document.getElementById('row-gopay-pin');
-const inputGoPayPin = document.getElementById('input-gopay-pin');
 const selectMailProvider = document.getElementById('select-mail-provider');
 const btnMailLogin = document.getElementById('btn-mail-login');
 const rowCustomMailReceiveMode = document.getElementById('row-custom-mail-receive-mode');
@@ -594,7 +586,6 @@ const stepsList = document.querySelector('.steps-list');
 const PLUS_PAYMENT_METHOD_PAYPAL = 'paypal';
 const PLUS_PAYMENT_METHOD_PAYPAL_HOSTED = 'paypal-hosted';
 const PLUS_PAYMENT_METHOD_NONE = 'none';
-const PLUS_PAYMENT_METHOD_GOPAY = 'gopay';
 const PLUS_PAYMENT_METHOD_GPC_HELPER = 'gpc-helper';
 const DEFAULT_GPC_BASE_URL = 'https://gpc.qlhazycoder.top';
 const DEFAULT_PLUS_HOSTED_CHECKOUT_OAUTH_DELAY_SECONDS = 3;
@@ -1625,8 +1616,6 @@ let cloudflareTempEmailDomainEditMode = false;
 let modalChoiceResolver = null;
 let currentModalActions = [];
 let modalResultBuilder = null;
-let activePlusManualConfirmationRequestId = '';
-let plusManualConfirmationDialogInFlight = false;
 let autoRunCountdownTimer = null;
 let configMenuOpen = false;
 let configActionInFlight = false;
@@ -1835,8 +1824,6 @@ const PRIVACY_MASKED_INPUT_IDS = Object.freeze([
   'input-openai-webchat-url',
   'input-kiro-rs-url',
   'input-grok-webchat2api-url',
-  'input-gopay-phone',
-  'input-gopay-otp',
   'input-email-prefix',
   'input-inbucket-host',
   'input-inbucket-mailbox',
@@ -2261,183 +2248,6 @@ async function openConfirmModalWithOption({
     confirmed: result?.choice === 'confirm',
     optionChecked: Boolean(result?.optionChecked),
   };
-}
-
-async function openPlusManualConfirmationDialog(options = {}) {
-  const method = String(options.method || '').trim().toLowerCase();
-  const activeFlowId = String(latestState?.activeFlowId || latestState?.flowId || 'openai').trim().toLowerCase();
-  const normalizeTargetIdForFlowSafe = typeof normalizeTargetIdForFlow === 'function'
-    ? normalizeTargetIdForFlow
-    : ((flowId, targetId = '', fallback = '') => {
-      const normalizedFlowId = String(flowId || '').trim().toLowerCase() || 'openai';
-      if (normalizedFlowId === 'openai') {
-        const normalizedTargetId = String(targetId || fallback || '').trim().toLowerCase();
-        return normalizedTargetId === 'sub2api' || normalizedTargetId === 'codex2api' ? normalizedTargetId : 'cpa';
-      }
-      const normalizedTargetId = String(targetId || '').trim().toLowerCase();
-      return normalizedTargetId || String(fallback || '').trim().toLowerCase() || 'kiro-rs';
-    });
-  const getDefaultTargetIdForFlowSafe = typeof getDefaultTargetIdForFlow === 'function'
-    ? getDefaultTargetIdForFlow
-    : ((flowId = 'openai') => (String(flowId || '').trim().toLowerCase() === 'openai' ? 'cpa' : 'kiro-rs'));
-  const normalizePlusStrategyTargetIdSafe = typeof normalizePlusStrategyTargetId === 'function'
-    ? normalizePlusStrategyTargetId
-    : ((value = '') => {
-      const normalized = String(value || '').trim().toLowerCase();
-      if (normalized === 'sub2api' || normalized === 'codex2api') {
-        return normalized;
-      }
-      return 'cpa';
-    });
-  const targetId = normalizePlusStrategyTargetIdSafe(
-    typeof getSelectedTargetIdForState === 'function'
-      ? getSelectedTargetIdForState(latestState, activeFlowId)
-      : normalizeTargetIdForFlowSafe(
-        activeFlowId,
-        latestState?.targetId || '',
-        getDefaultTargetIdForFlowSafe(activeFlowId)
-      )
-  );
-  const signupMethod = String(latestState?.resolvedSignupMethod || latestState?.signupMethod || 'email').trim().toLowerCase();
-  const plusModeEnabled = latestState?.plusModeEnabled === undefined ? true : Boolean(latestState.plusModeEnabled);
-  const plusAccountAccessStrategy = String(latestState?.plusAccountAccessStrategy || 'oauth').trim().toLowerCase();
-  const useSub2ApiSessionImport = plusModeEnabled
-    && activeFlowId === 'openai'
-    && targetId === 'sub2api'
-    && signupMethod === 'email'
-    && plusAccountAccessStrategy === 'sub2api_codex_session';
-  const continuationActionLabel = useSub2ApiSessionImport
-    ? '导入当前 ChatGPT 会话到 SUB2API'
-    : 'OAuth 登录';
-  const title = String(options.title || '').trim() || (method === 'gopay' ? 'GoPay 订阅确认' : '手动确认');
-  const message = String(options.message || '').trim()
-    || (method === 'gopay'
-      ? '请在当前订阅页中手动完成 GoPay 订阅，完成后点击“我已完成订阅”继续。'
-      : '请先在页面中完成当前手动操作，完成后点击确认继续。');
-  return openActionModal({
-    title,
-    message,
-    actions: [
-      { id: 'cancel', label: '取消等待', variant: 'btn-ghost' },
-      { id: 'confirm', label: '我已完成订阅', variant: 'btn-primary' },
-    ],
-    alert: method === 'gopay'
-      ? { text: `确认后流程会直接继续到 Plus 模式后续的${continuationActionLabel}。`, tone: 'info' }
-      : null,
-  });
-}
-
-async function syncPlusManualConfirmationDialog() {
-  const requestId = String(latestState?.plusManualConfirmationRequestId || '').trim();
-  const pending = Boolean(latestState?.plusManualConfirmationPending);
-  if (!pending || !requestId || plusManualConfirmationDialogInFlight || activePlusManualConfirmationRequestId === requestId) {
-    return;
-  }
-
-  const step = Number(latestState?.plusManualConfirmationStep) || 0;
-  const method = String(latestState?.plusManualConfirmationMethod || '').trim().toLowerCase();
-  const activeFlowId = String(latestState?.activeFlowId || latestState?.flowId || 'openai').trim().toLowerCase();
-  const normalizeTargetIdForFlowSafe = typeof normalizeTargetIdForFlow === 'function'
-    ? normalizeTargetIdForFlow
-    : ((flowId, targetId = '', fallback = '') => {
-      const normalizedFlowId = String(flowId || '').trim().toLowerCase() || 'openai';
-      if (normalizedFlowId === 'openai') {
-        const normalizedTargetId = String(targetId || fallback || '').trim().toLowerCase();
-        return normalizedTargetId === 'sub2api' || normalizedTargetId === 'codex2api' ? normalizedTargetId : 'cpa';
-      }
-      const normalizedTargetId = String(targetId || '').trim().toLowerCase();
-      return normalizedTargetId || String(fallback || '').trim().toLowerCase() || 'kiro-rs';
-    });
-  const getDefaultTargetIdForFlowSafe = typeof getDefaultTargetIdForFlow === 'function'
-    ? getDefaultTargetIdForFlow
-    : ((flowId = 'openai') => (String(flowId || '').trim().toLowerCase() === 'openai' ? 'cpa' : 'kiro-rs'));
-  const normalizePlusStrategyTargetIdSafe = typeof normalizePlusStrategyTargetId === 'function'
-    ? normalizePlusStrategyTargetId
-    : ((value = '') => {
-      const normalized = String(value || '').trim().toLowerCase();
-      if (normalized === 'sub2api' || normalized === 'codex2api') {
-        return normalized;
-      }
-      return 'cpa';
-    });
-  const targetId = normalizePlusStrategyTargetIdSafe(
-    typeof getSelectedTargetIdForState === 'function'
-      ? getSelectedTargetIdForState(latestState, activeFlowId)
-      : normalizeTargetIdForFlowSafe(
-        activeFlowId,
-        latestState?.targetId || '',
-        getDefaultTargetIdForFlowSafe(activeFlowId)
-      )
-  );
-  const signupMethod = String(latestState?.resolvedSignupMethod || latestState?.signupMethod || 'email').trim().toLowerCase();
-  const plusModeEnabled = latestState?.plusModeEnabled === undefined ? true : Boolean(latestState.plusModeEnabled);
-  const plusAccountAccessStrategy = String(latestState?.plusAccountAccessStrategy || 'oauth').trim().toLowerCase();
-  const useSub2ApiSessionImport = plusModeEnabled
-    && activeFlowId === 'openai'
-    && targetId === 'sub2api'
-    && signupMethod === 'email'
-    && plusAccountAccessStrategy === 'sub2api_codex_session';
-  const continuationActionLabel = useSub2ApiSessionImport
-    ? '导入当前 ChatGPT 会话到 SUB2API'
-    : 'OAuth 登录';
-  const title = latestState?.plusManualConfirmationTitle;
-  const message = latestState?.plusManualConfirmationMessage;
-  activePlusManualConfirmationRequestId = requestId;
-  plusManualConfirmationDialogInFlight = true;
-  let shouldReopenDialog = false;
-
-  try {
-    const choice = await openPlusManualConfirmationDialog({
-      method,
-      title,
-      message,
-    });
-    const currentRequestId = String(latestState?.plusManualConfirmationRequestId || '').trim();
-    const stillPending = Boolean(latestState?.plusManualConfirmationPending);
-    if (!stillPending || currentRequestId !== requestId) {
-      return;
-    }
-    if (choice == null) {
-      shouldReopenDialog = true;
-      showToast('当前订阅确认仍在等待中，将重新弹出确认窗口。', 'info', 1800);
-      return;
-    }
-
-    const confirmed = choice === 'confirm';
-    const response = await chrome.runtime.sendMessage({
-      type: 'RESOLVE_PLUS_MANUAL_CONFIRMATION',
-      source: 'sidepanel',
-      payload: {
-        step,
-        requestId,
-        confirmed,
-      },
-    });
-    if (response?.error) {
-      throw new Error(response.error);
-    }
-    if (confirmed) {
-      showToast(method === 'gopay' ? `GoPay 订阅已确认，正在继续${continuationActionLabel}...` : '已确认，流程继续执行中...', 'info', 2200);
-    } else {
-      showToast(method === 'gopay' ? '已取消 GoPay 订阅等待。' : '已取消当前手动确认。', 'warn', 2200);
-    }
-  } catch (error) {
-    showToast(error?.message || String(error || '未知错误'), 'error');
-  } finally {
-    if (activePlusManualConfirmationRequestId === requestId) {
-      activePlusManualConfirmationRequestId = '';
-    }
-    plusManualConfirmationDialogInFlight = false;
-    if (
-      shouldReopenDialog
-      && latestState?.plusManualConfirmationPending
-      && String(latestState?.plusManualConfirmationRequestId || '').trim() === requestId
-    ) {
-      setTimeout(() => {
-        void syncPlusManualConfirmationDialog();
-      }, 0);
-    }
-  }
 }
 
 function isPromptDismissed(storageKey) {
@@ -3578,10 +3388,10 @@ async function persistOperationDelayToggle() {
 
 function normalizePlusPaymentMethod(value = '') {
   const rootScope = typeof window !== 'undefined' ? window : globalThis;
-  if (rootScope.GoPayUtils?.normalizePlusPaymentMethod) {
-    return rootScope.GoPayUtils.normalizePlusPaymentMethod(value);
+  if (rootScope.GpcUtils?.normalizePlusPaymentMethod) {
+    return rootScope.GpcUtils.normalizePlusPaymentMethod(value);
   }
-  const gopayValue = typeof PLUS_PAYMENT_METHOD_GOPAY !== 'undefined' ? PLUS_PAYMENT_METHOD_GOPAY : 'gopay';
+
   const gpcValue = typeof PLUS_PAYMENT_METHOD_GPC_HELPER !== 'undefined' ? PLUS_PAYMENT_METHOD_GPC_HELPER : 'gpc-helper';
   const paypalValue = typeof PLUS_PAYMENT_METHOD_PAYPAL !== 'undefined' ? PLUS_PAYMENT_METHOD_PAYPAL : 'paypal';
   const paypalHostedValue = typeof PLUS_PAYMENT_METHOD_PAYPAL_HOSTED !== 'undefined' ? PLUS_PAYMENT_METHOD_PAYPAL_HOSTED : 'paypal-hosted';
@@ -3596,7 +3406,7 @@ function normalizePlusPaymentMethod(value = '') {
   if (normalized === gpcValue) {
     return gpcValue;
   }
-  return normalized === gopayValue ? gopayValue : paypalValue;
+  return paypalValue;
 }
 
 function normalizePlusHostedCheckoutOauthDelaySeconds(value) {
@@ -5380,28 +5190,8 @@ function collectSettingsPayload() {
     paypalPassword: String(currentPayPalAccount?.password || latestState?.paypalPassword || ''),
     currentPayPalAccountId: String(latestState?.currentPayPalAccountId || '').trim(),
     paypalAccounts: payPalAccounts,
-    gopayCountryCode: window.GoPayUtils?.normalizeGoPayCountryCode
-      ? window.GoPayUtils.normalizeGoPayCountryCode(typeof selectGoPayCountryCode !== 'undefined' && selectGoPayCountryCode ? selectGoPayCountryCode.value : latestState?.gopayCountryCode)
-      : (typeof selectGoPayCountryCode !== 'undefined' && selectGoPayCountryCode
-        ? String(selectGoPayCountryCode.value || '+86').trim()
-        : String(latestState?.gopayCountryCode || '+86').trim()),
-    gopayPhone: window.GoPayUtils?.normalizeGoPayPhone
-      ? window.GoPayUtils.normalizeGoPayPhone(typeof inputGoPayPhone !== 'undefined' && inputGoPayPhone ? inputGoPayPhone.value : latestState?.gopayPhone)
-      : (typeof inputGoPayPhone !== 'undefined' && inputGoPayPhone
-        ? String(inputGoPayPhone.value || '').trim()
-        : String(latestState?.gopayPhone || '').trim()),
-    gopayOtp: window.GoPayUtils?.normalizeGoPayOtp
-      ? window.GoPayUtils.normalizeGoPayOtp(typeof inputGoPayOtp !== 'undefined' && inputGoPayOtp ? inputGoPayOtp.value : latestState?.gopayOtp)
-      : (typeof inputGoPayOtp !== 'undefined' && inputGoPayOtp
-        ? String(inputGoPayOtp.value || '').trim().replace(/[^\d]/g, '')
-        : String(latestState?.gopayOtp || '').trim().replace(/[^\d]/g, '')),
-    gopayPin: window.GoPayUtils?.normalizeGoPayPin
-      ? window.GoPayUtils.normalizeGoPayPin(typeof inputGoPayPin !== 'undefined' && inputGoPayPin ? inputGoPayPin.value : latestState?.gopayPin)
-      : (typeof inputGoPayPin !== 'undefined' && inputGoPayPin
-        ? String(inputGoPayPin.value || '')
-        : String(latestState?.gopayPin || '')),
-    gpcBaseUrl: window.GoPayUtils?.normalizeGpcBaseUrl
-      ? window.GoPayUtils.normalizeGpcBaseUrl(defaultGpcBaseUrl)
+    gpcBaseUrl: window.GpcUtils?.normalizeGpcBaseUrl
+      ? window.GpcUtils.normalizeGpcBaseUrl(defaultGpcBaseUrl)
       : String(defaultGpcBaseUrl).trim().replace(/\/+$/g, ''),
     gpcCardKey: typeof inputGpcCardKey !== 'undefined' && inputGpcCardKey
       ? normalizeGpcCardKeyInput(inputGpcCardKey.value || '')
@@ -10895,7 +10685,7 @@ function updatePlusModeUI() {
   const paypalValue = typeof PLUS_PAYMENT_METHOD_PAYPAL !== 'undefined' ? PLUS_PAYMENT_METHOD_PAYPAL : 'paypal';
   const paypalHostedValue = typeof PLUS_PAYMENT_METHOD_PAYPAL_HOSTED !== 'undefined' ? PLUS_PAYMENT_METHOD_PAYPAL_HOSTED : 'paypal-hosted';
   const noneValue = typeof PLUS_PAYMENT_METHOD_NONE !== 'undefined' ? PLUS_PAYMENT_METHOD_NONE : 'none';
-  const gopayValue = typeof PLUS_PAYMENT_METHOD_GOPAY !== 'undefined' ? PLUS_PAYMENT_METHOD_GOPAY : 'gopay';
+
   const gpcValue = typeof PLUS_PAYMENT_METHOD_GPC_HELPER !== 'undefined' ? PLUS_PAYMENT_METHOD_GPC_HELPER : 'gpc-helper';
   const oauthStrategyValue = typeof PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH !== 'undefined'
     ? PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH
@@ -11025,8 +10815,7 @@ function updatePlusModeUI() {
   if (typeof plusPaymentMethodCaption !== 'undefined' && plusPaymentMethodCaption) {
     plusPaymentMethodCaption.textContent = method === gpcValue
       ? 'GPC 网页充值链路'
-      : method === gopayValue
-      ? 'GoPay 印尼订阅链路'
+
       : method === noneValue
       ? '已有 Plus，无需配置支付链路'
       : method === paypalHostedValue
@@ -11142,17 +10931,7 @@ function updatePlusModeUI() {
   if (typeof btnGpcCardKeyPurchase !== 'undefined' && btnGpcCardKeyPurchase) {
     btnGpcCardKeyPurchase.style.display = gpcRowsVisible ? '' : 'none';
   }
-  [
-    typeof rowGoPayCountryCode !== 'undefined' ? rowGoPayCountryCode : null,
-    typeof rowGoPayPhone !== 'undefined' ? rowGoPayPhone : null,
-    typeof rowGoPayOtp !== 'undefined' ? rowGoPayOtp : null,
-    typeof rowGoPayPin !== 'undefined' ? rowGoPayPin : null,
-  ].forEach((row) => {
-    if (!row) {
-      return;
-    }
-    row.style.display = enabled && selectedMethod === gopayValue ? '' : 'none';
-  });
+
 }
 
 function setSettingsCardLocked(locked) {
@@ -11392,15 +11171,15 @@ function isGpcHelperCheckoutSelected() {
 }
 
 function normalizeGpcCardKeyInput(value = '') {
-  if (window.GoPayUtils?.normalizeGpcCardKey) {
-    return window.GoPayUtils.normalizeGpcCardKey(value);
+  if (window.GpcUtils?.normalizeGpcCardKey) {
+    return window.GpcUtils.normalizeGpcCardKey(value);
   }
   return String(value || '').trim().toUpperCase();
 }
 
 function isGpcCardKeyInputFormat(value = '') {
-  if (window.GoPayUtils?.isGpcCardKeyFormat) {
-    return window.GoPayUtils.isGpcCardKeyFormat(value);
+  if (window.GpcUtils?.isGpcCardKeyFormat) {
+    return window.GpcUtils.isGpcCardKeyFormat(value);
   }
   return /^GPC-[A-F0-9]{8}-[A-F0-9]{8}-[A-F0-9]{8}$/.test(normalizeGpcCardKeyInput(value));
 }
@@ -11509,206 +11288,6 @@ async function ensureGpcCardKeyReadyForStart(options = {}) {
     showToast('GPC 卡密已填写。', 'success', 1800);
   }
   return true;
-}
-
-async function openPlusManualConfirmationDialog(options = {}) {
-  const method = String(options.method || '').trim().toLowerCase();
-  const gopayValue = typeof PLUS_PAYMENT_METHOD_GOPAY !== 'undefined' ? PLUS_PAYMENT_METHOD_GOPAY : 'gopay';
-  const activeFlowId = String(latestState?.activeFlowId || latestState?.flowId || 'openai').trim().toLowerCase();
-  const normalizeTargetIdForFlowSafe = typeof normalizeTargetIdForFlow === 'function'
-    ? normalizeTargetIdForFlow
-    : ((flowId, targetId = '', fallback = '') => {
-      const normalizedFlowId = String(flowId || '').trim().toLowerCase() || 'openai';
-      if (normalizedFlowId === 'openai') {
-        const normalizedTargetId = String(targetId || fallback || '').trim().toLowerCase();
-        return normalizedTargetId === 'sub2api' || normalizedTargetId === 'codex2api' ? normalizedTargetId : 'cpa';
-      }
-      const normalizedTargetId = String(targetId || '').trim().toLowerCase();
-      return normalizedTargetId || String(fallback || '').trim().toLowerCase() || 'kiro-rs';
-    });
-  const getDefaultTargetIdForFlowSafe = typeof getDefaultTargetIdForFlow === 'function'
-    ? getDefaultTargetIdForFlow
-    : ((flowId = 'openai') => (String(flowId || '').trim().toLowerCase() === 'openai' ? 'cpa' : 'kiro-rs'));
-  const normalizePlusStrategyTargetIdSafe = typeof normalizePlusStrategyTargetId === 'function'
-    ? normalizePlusStrategyTargetId
-    : ((value = '') => {
-      const normalized = String(value || '').trim().toLowerCase();
-      if (normalized === 'sub2api' || normalized === 'codex2api') {
-        return normalized;
-      }
-      return 'cpa';
-    });
-  const targetId = normalizePlusStrategyTargetIdSafe(
-    typeof getSelectedTargetIdForState === 'function'
-      ? getSelectedTargetIdForState(latestState, activeFlowId)
-      : normalizeTargetIdForFlowSafe(
-        activeFlowId,
-        latestState?.targetId || '',
-        getDefaultTargetIdForFlowSafe(activeFlowId)
-      )
-  );
-  const signupMethod = String(latestState?.resolvedSignupMethod || latestState?.signupMethod || 'email').trim().toLowerCase();
-  const plusModeEnabled = latestState?.plusModeEnabled === undefined ? true : Boolean(latestState.plusModeEnabled);
-  const plusAccountAccessStrategy = String(latestState?.plusAccountAccessStrategy || 'oauth').trim().toLowerCase();
-  const useSub2ApiSessionImport = plusModeEnabled
-    && activeFlowId === 'openai'
-    && targetId === 'sub2api'
-    && signupMethod === 'email'
-    && plusAccountAccessStrategy === 'sub2api_codex_session';
-  const continuationActionLabel = useSub2ApiSessionImport
-    ? '导入当前 ChatGPT 会话到 SUB2API'
-    : 'OAuth 登录';
-  const title = String(options.title || '').trim() || (method === gopayValue ? 'GoPay 订阅确认' : '手动确认');
-  const message = String(options.message || '').trim()
-    || (method === gopayValue
-      ? '请在当前订阅页中手动完成 GoPay 订阅，完成后点击“我已完成订阅”继续。'
-      : '请先在页面中完成当前手动操作，完成后点击确认继续。');
-  return openActionModal({
-    title,
-    message,
-    actions: [
-      { id: 'cancel', label: '取消等待', variant: 'btn-ghost' },
-      { id: 'confirm', label: '我已完成订阅', variant: 'btn-primary' },
-    ],
-    alert: method === gopayValue
-      ? { text: `确认后流程会直接继续到 Plus 模式后续的${continuationActionLabel}。`, tone: 'info' }
-      : null,
-  });
-}
-
-async function syncPlusManualConfirmationDialog() {
-  const gopayValue = typeof PLUS_PAYMENT_METHOD_GOPAY !== 'undefined' ? PLUS_PAYMENT_METHOD_GOPAY : 'gopay';
-  const requestId = String(latestState?.plusManualConfirmationRequestId || '').trim();
-  const pending = Boolean(latestState?.plusManualConfirmationPending);
-  if (!pending || !requestId || plusManualConfirmationDialogInFlight || activePlusManualConfirmationRequestId === requestId) {
-    return;
-  }
-
-  const step = Number(latestState?.plusManualConfirmationStep) || 0;
-  const method = String(latestState?.plusManualConfirmationMethod || '').trim().toLowerCase();
-  const activeFlowId = String(latestState?.activeFlowId || latestState?.flowId || 'openai').trim().toLowerCase();
-  const normalizeTargetIdForFlowSafe = typeof normalizeTargetIdForFlow === 'function'
-    ? normalizeTargetIdForFlow
-    : ((flowId, targetId = '', fallback = '') => {
-      const normalizedFlowId = String(flowId || '').trim().toLowerCase() || 'openai';
-      if (normalizedFlowId === 'openai') {
-        const normalizedTargetId = String(targetId || fallback || '').trim().toLowerCase();
-        return normalizedTargetId === 'sub2api' || normalizedTargetId === 'codex2api' ? normalizedTargetId : 'cpa';
-      }
-      const normalizedTargetId = String(targetId || '').trim().toLowerCase();
-      return normalizedTargetId || String(fallback || '').trim().toLowerCase() || 'kiro-rs';
-    });
-  const getDefaultTargetIdForFlowSafe = typeof getDefaultTargetIdForFlow === 'function'
-    ? getDefaultTargetIdForFlow
-    : ((flowId = 'openai') => (String(flowId || '').trim().toLowerCase() === 'openai' ? 'cpa' : 'kiro-rs'));
-  const normalizePlusStrategyTargetIdSafe = typeof normalizePlusStrategyTargetId === 'function'
-    ? normalizePlusStrategyTargetId
-    : ((value = '') => {
-      const normalized = String(value || '').trim().toLowerCase();
-      if (normalized === 'sub2api' || normalized === 'codex2api') {
-        return normalized;
-      }
-      return 'cpa';
-    });
-  const targetId = normalizePlusStrategyTargetIdSafe(
-    typeof getSelectedTargetIdForState === 'function'
-      ? getSelectedTargetIdForState(latestState, activeFlowId)
-      : normalizeTargetIdForFlowSafe(
-        activeFlowId,
-        latestState?.targetId || '',
-        getDefaultTargetIdForFlowSafe(activeFlowId)
-      )
-  );
-  const signupMethod = String(latestState?.resolvedSignupMethod || latestState?.signupMethod || 'email').trim().toLowerCase();
-  const plusModeEnabled = latestState?.plusModeEnabled === undefined ? true : Boolean(latestState.plusModeEnabled);
-  const plusAccountAccessStrategy = String(latestState?.plusAccountAccessStrategy || 'oauth').trim().toLowerCase();
-  const useSub2ApiSessionImport = plusModeEnabled
-    && activeFlowId === 'openai'
-    && targetId === 'sub2api'
-    && signupMethod === 'email'
-    && plusAccountAccessStrategy === 'sub2api_codex_session';
-  const continuationActionLabel = useSub2ApiSessionImport
-    ? '导入当前 ChatGPT 会话到 SUB2API'
-    : 'OAuth 登录';
-  const title = latestState?.plusManualConfirmationTitle;
-  const message = latestState?.plusManualConfirmationMessage;
-  activePlusManualConfirmationRequestId = requestId;
-  plusManualConfirmationDialogInFlight = true;
-  let shouldReopenDialog = false;
-
-  try {
-    const choice = await openPlusManualConfirmationDialog({
-      method,
-      title,
-      message,
-    });
-    const currentRequestId = String(latestState?.plusManualConfirmationRequestId || '').trim();
-    const stillPending = Boolean(latestState?.plusManualConfirmationPending);
-    if (!stillPending || currentRequestId !== requestId) {
-      return;
-    }
-    if (choice == null) {
-      shouldReopenDialog = true;
-      showToast('当前订阅确认仍在等待中，将重新弹出确认窗口。', 'info', 1800);
-      return;
-    }
-
-    const confirmed = choice === 'confirm';
-    const response = await chrome.runtime.sendMessage({
-      type: 'RESOLVE_PLUS_MANUAL_CONFIRMATION',
-      source: 'sidepanel',
-      payload: {
-        step,
-        requestId,
-        confirmed,
-      },
-    });
-    if (response?.error) {
-      throw new Error(response.error);
-    }
-    if (confirmed) {
-      showToast(method === gopayValue ? `GoPay 订阅已确认，正在继续${continuationActionLabel}...` : '已确认，流程继续执行中...', 'info', 2200);
-    } else {
-      showToast(method === gopayValue ? '已取消 GoPay 订阅等待。' : '已取消当前手动确认。', 'warn', 2200);
-    }
-  } catch (error) {
-    showToast(error?.message || String(error || '未知错误'), 'error');
-  } finally {
-    if (activePlusManualConfirmationRequestId === requestId) {
-      activePlusManualConfirmationRequestId = '';
-    }
-    plusManualConfirmationDialogInFlight = false;
-    if (
-      shouldReopenDialog
-      && latestState?.plusManualConfirmationPending
-      && String(latestState?.plusManualConfirmationRequestId || '').trim() === requestId
-    ) {
-      setTimeout(() => {
-        void syncPlusManualConfirmationDialog();
-      }, 0);
-    }
-  }
-}
-async function openPlusManualConfirmationDialog(options = {}) {
-  const method = String(options.method || '').trim().toLowerCase();
-  const gopayValue = typeof PLUS_PAYMENT_METHOD_GOPAY !== 'undefined' ? PLUS_PAYMENT_METHOD_GOPAY : 'gopay';
-  const continuationActionLabel = resolvePlusManualContinuationActionLabelFromState(latestState);
-  const title = String(options.title || '').trim() || (method === gopayValue ? 'GoPay subscription confirmation' : 'Manual confirmation');
-  const message = String(options.message || '').trim()
-    || (method === gopayValue
-      ? 'Complete the GoPay subscription on the current page, then continue.'
-      : 'Finish the current manual action on the page, then continue.');
-  return openActionModal({
-    title,
-    message,
-    actions: [
-      { id: 'cancel', label: 'Cancel', variant: 'btn-ghost' },
-      { id: 'confirm', label: 'Continue', variant: 'btn-primary' },
-    ],
-    alert: method === gopayValue
-      ? { text: `After confirmation, the Plus flow will continue with ${continuationActionLabel}.`, tone: 'info' }
-      : null,
-  });
 }
 
 async function clearRegistrationEmail(options = {}) {
@@ -12262,29 +11841,6 @@ function applySettingsState(state) {
     } else {
       setGpcCardKeyStatus(inputGpcCardKey.value ? '等待检测' : '等待输入', '');
     }
-  }
-  if (typeof selectGoPayCountryCode !== 'undefined' && selectGoPayCountryCode) {
-    const normalizedGoPayCountryCode = window.GoPayUtils?.normalizeGoPayCountryCode
-      ? window.GoPayUtils.normalizeGoPayCountryCode(state?.gopayCountryCode)
-      : String(state?.gopayCountryCode || '+86').trim();
-    const hasOption = Array.from(selectGoPayCountryCode.options || [])
-      .some((option) => option.value === normalizedGoPayCountryCode);
-    if (!hasOption && normalizedGoPayCountryCode) {
-      const option = document.createElement('option');
-      option.value = normalizedGoPayCountryCode;
-      option.textContent = `自定义 ${normalizedGoPayCountryCode}`;
-      selectGoPayCountryCode.appendChild(option);
-    }
-    selectGoPayCountryCode.value = normalizedGoPayCountryCode || '+86';
-  }
-  if (typeof inputGoPayPhone !== 'undefined' && inputGoPayPhone) {
-    inputGoPayPhone.value = state?.gopayPhone || '';
-  }
-  if (typeof inputGoPayOtp !== 'undefined' && inputGoPayOtp) {
-    inputGoPayOtp.value = state?.gopayOtp || '';
-  }
-  if (typeof inputGoPayPin !== 'undefined' && inputGoPayPin) {
-    inputGoPayPin.value = state?.gopayPin || '';
   }
   if (typeof inputHostedCheckoutVerificationUrl !== 'undefined' && inputHostedCheckoutVerificationUrl) {
     inputHostedCheckoutVerificationUrl.value = String(state?.hostedCheckoutVerificationUrl || '').trim();
@@ -13738,56 +13294,6 @@ function getCustomVerificationPromptCopy(step) {
       },
     } : {}),
   };
-}
-
-function normalizeGoPayOtpInputValue(value = '') {
-  return window.GoPayUtils?.normalizeGoPayOtp
-    ? window.GoPayUtils.normalizeGoPayOtp(value)
-    : String(value || '').trim().replace(/[^\d]/g, '');
-}
-
-async function openGoPayOtpInputDialog(payload = {}) {
-  if (!sharedFormDialog?.open) {
-    throw new Error('验证码输入弹窗未加载，请刷新扩展后重试。');
-  }
-
-  const initialCode = normalizeGoPayOtpInputValue(payload.code || inputGoPayOtp?.value || latestState?.gopayOtp || '');
-  const result = await sharedFormDialog.open({
-    title: '输入 GoPay 验证码',
-    message: '请把当前 GoPay 页面收到的验证码填到这里，确认后插件会继续填写验证码并进入 PIN 步骤。',
-    confirmLabel: '提交验证码',
-    confirmVariant: 'btn-primary',
-    fields: [
-      {
-        key: 'code',
-        label: '验证码',
-        type: 'text',
-        required: true,
-        requiredMessage: '请输入 GoPay 验证码。',
-        placeholder: '请输入数字验证码',
-        inputMode: 'numeric',
-        autocomplete: 'one-time-code',
-        value: initialCode,
-        validate: (value) => {
-          const normalized = normalizeGoPayOtpInputValue(value);
-          if (!normalized) return '请输入 GoPay 验证码。';
-          if (normalized.length < 4) return 'GoPay 验证码长度过短，请检查。';
-          return '';
-        },
-      },
-    ],
-  });
-  const code = normalizeGoPayOtpInputValue(result?.code || '');
-  if (!code) {
-    return { cancelled: true, code: '' };
-  }
-  if (inputGoPayOtp) {
-    inputGoPayOtp.value = code;
-  }
-  syncLatestState({ gopayOtp: code });
-  markSettingsDirty(true);
-  saveSettings({ silent: true }).catch(() => {});
-  return { code };
 }
 
 async function openCustomVerificationConfirmDialog(step) {
@@ -16740,10 +16246,7 @@ selectPlusPaymentMethod?.addEventListener('change', () => {
 });
 
 [
-  selectGoPayCountryCode,
-  inputGoPayPhone,
-  inputGoPayOtp,
-  inputGoPayPin,
+
   inputHostedCheckoutVerificationUrl,
   inputHostedCheckoutPhone,
   inputPlusHostedCheckoutOauthDelaySeconds,
@@ -18901,17 +18404,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       });
       return true;
     }
-
-    case 'REQUEST_GOPAY_OTP_INPUT': {
-      (async () => {
-        const result = await openGoPayOtpInputDialog(message.payload || {});
-        sendResponse(result || { cancelled: true, code: '' });
-      })().catch((err) => {
-        sendResponse({ error: err.message });
-      });
-      return true;
-    }
-
     case 'SECURITY_BLOCKED_ALERT': {
       openConfirmModal({
         title: message.payload?.title || '流程已完全停止',
@@ -19383,16 +18875,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         updatePlusModeUI();
         updateSignupMethodUI({ notify: true });
       }
-      if (
-        message.payload.plusManualConfirmationPending !== undefined
-        || message.payload.plusManualConfirmationRequestId !== undefined
-        || message.payload.plusManualConfirmationStep !== undefined
-        || message.payload.plusManualConfirmationMethod !== undefined
-        || message.payload.plusManualConfirmationTitle !== undefined
-        || message.payload.plusManualConfirmationMessage !== undefined
-      ) {
-        void syncPlusManualConfirmationDialog();
-      }
+
       if (message.payload.currentHotmailAccountId !== undefined || message.payload.hotmailAccounts !== undefined) {
         renderHotmailAccounts();
         if (selectMailProvider.value === 'hotmail-api') {

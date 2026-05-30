@@ -59,8 +59,8 @@ test('background imports node registry and wires the rebuilt Kiro executors', ()
   assert.match(source, /'openai-upload-session-to-webchat'/);
 });
 
-test('GoPay approve executor receives debugger click and manual OTP helpers', () => {
+test('background no longer wires removed payment executors or OTP helpers', () => {
   const source = fs.readFileSync('background.js', 'utf8');
-  assert.match(source, /createGoPayApproveExecutor\(\{[\s\S]*clickWithDebugger[\s\S]*requestGoPayOtpInput[\s\S]*\}\)/);
-  assert.match(source, /REQUEST_GOPAY_OTP_INPUT/);
+  assert.doesNotMatch(source, /create[A-Z][A-Za-z]+ApproveExecutor\(\{[\s\S]*request[A-Z][A-Za-z]+OtpInput/);
+  assert.doesNotMatch(source, /REQUEST_[A-Z]+_OTP_INPUT/);
 });
